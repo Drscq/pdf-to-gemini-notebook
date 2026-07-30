@@ -26,6 +26,7 @@ const RPCMethod = {
   ADD_SOURCE_FILE: 'o4cbdc',
   DELETE_SOURCE: 'tGMBJ',
   UPDATE_SOURCE: 'b7Wfje',
+  GET_SOURCE: 'hizoJc',
   CREATE_ARTIFACT: 'R7cb6c',
   LIST_ARTIFACTS: 'gArtLc',
   GENERATE_MIND_MAP: 'yyryJe',
@@ -574,6 +575,33 @@ async function deleteNotebook(notebookId) {
   await rpcCall(RPCMethod.DELETE_NOTEBOOK, params, '/', true);
   console.log(`[NotebookLM API] Deleted notebook: ${notebookId}`);
   return { ok: true };
+}
+
+/**
+ * Fetch a source's extracted fulltext content (NotebookLM has already parsed
+ * the document by the time the source is READY). Returns the content string
+ * or null.
+ */
+async function getSourceContent(notebookId, sourceId) {
+  const params = [[String(sourceId)], [2], [2]];
+  const result = await rpcCall(RPCMethod.GET_SOURCE, params, `/notebook/${notebookId}`, true);
+  // Expected shape: [sourceId, title, content] — tolerate drift by taking the
+  // longest string in the response.
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) {
+    let longest = null;
+    const walk = (node, depth) => {
+      if (depth > 3) return;
+      if (typeof node === 'string') {
+        if (!longest || node.length > longest.length) longest = node;
+      } else if (Array.isArray(node)) {
+        for (const item of node) walk(item, depth + 1);
+      }
+    };
+    walk(result, 0);
+    return longest && longest.length > 100 ? longest : null;
+  }
+  return null;
 }
 
 /**
@@ -1684,6 +1712,7 @@ export {
   addFileSource,
   deleteSource,
   renameSource,
+  getSourceContent,
   listSources,
   listNotebooks,
   getNotebookTitle,

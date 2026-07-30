@@ -31,6 +31,7 @@ import {
     addFileSource,
     deleteSource,
     renameSource,
+    getSourceContent,
     listSources,
     listNotebooks,
     getNotebookTitle,
@@ -329,16 +330,54 @@ function composeSourceName(title, pdfUrl) {
 }
 
 /**
- * Rename the source to NotebookLM's auto-generated notebook title (its
- * content-derived document title). Returns true when the rename happened.
+ * Guess the document title from NotebookLM's extracted fulltext: the first
+ * plausible title-looking line (papers open with their title).
+ */
+function titleFromFulltext(text) {
+    if (typeof text !== 'string') return null;
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(0, 15);
+    for (const line of lines) {
+        if (line.length < 10 || line.length > 150) continue;
+        if (/^(arxiv|doi|issn|isbn|https?:|www\.|vol\.|no\.|pp\.|preprint|proceedings)/i.test(line)) continue;
+        if (/^[\d\s.,/-]+$/.test(line)) continue;
+        if (/@/.test(line)) continue;   // author affiliation/email lines
+        if (/^(abstract|keywords|introduction|contents)\b/i.test(line)) continue;
+        if (!isInformativeTitle(line)) continue;
+        return line;
+    }
+    return null;
+}
+
+/**
+ * Rename the source with the best content-derived title. Sources in newly
+ * created notebooks can use NotebookLM's auto-generated notebook title;
+ * everywhere (including existing notebooks) the extracted fulltext's leading
+ * line works. Returns true when the rename happened.
  */
 async function upgradeSourceTitle(state) {
     try {
-        const nbTitle = await getNotebookTitle(state.notebookId);
-        if (!isInformativeTitle(nbTitle)) return false;
-        const newName = composeSourceName(nbTitle, state.pdfUrl);
+        let title = null;
+
+        // Primary: the document's own extracted text (works in any notebook).
+        try {
+            const content = await getSourceContent(state.notebookId, state.sourceId);
+            const guess = titleFromFulltext(content);
+            if (isInformativeTitle(guess)) title = guess;
+        } catch (contentErr) {
+            console.warn('[Pipeline] Could not read source content:', contentErr?.message);
+        }
+
+        // Backup: the auto notebook title (only meaningful for new notebooks).
+        let nbTitleUsed = false;
+        if (!title && state.createdNewNotebook) {
+            const nbTitle = await getNotebookTitle(state.notebookId);
+            if (isInformativeTitle(nbTitle)) { title = nbTitle; nbTitleUsed = true; }
+        }
+
+        if (!title) return false;
+        const newName = composeSourceName(title, state.pdfUrl);
         await renameSource(state.notebookId, state.sourceId, newName);
-        await setState({ notebookTitle: nbTitle, titleUpgradePending: false });
+        await setState(nbTitleUsed ? { notebookTitle: title, titleUpgradePending: false } : { titleUpgradePending: false });
         console.log(`[Pipeline] Upgraded source title to: ${newName}`);
         return true;
     } catch (e) {
@@ -917,7 +956,9 @@ async function tickSourcePoll(state) {
                 console.warn('[Tick] Could not rename source:', renameErr?.message);
             }
         }
-        if (state.createdNewNotebook && !isWebpageSourceType(state.sourceType)) {
+        // Schedule the content-derived title upgrade for any PDF source —
+        // it works in existing notebooks too (via the source's fulltext).
+        if (!isWebpageSourceType(state.sourceType)) {
             titleUpgradePending = true;
             await setState({ titleUpgradePending: true });
         }
