@@ -1,75 +1,71 @@
 # PDF to Gemini Notebook
 
-**English** | [简体中文](./README.zh-CN.md)
+**[English](#english)** · **[简体中文](#简体中文)**
 
-Import any PDF Chrome can open — direct links, arXiv, eprint, local files — into Gemini Notebook (formerly NotebookLM) in one click, optionally generating artifacts (audio overview, infographic, and more).
+Import any PDF Chrome can open into Gemini Notebook (formerly NotebookLM) in one click.
 
-> Formerly named *Chrome PDF to NotebookLM*; renamed after Google rebranded NotebookLM to Gemini Notebook at notebook.google.com.
+| Import view | Settings |
+|---|---|
+| ![Import view](./screenshot1.png) | ![Settings](./screenshot2.png) |
 
-## Screenshots
+---
 
-![Pipeline progress](./screenshot1.png)
-![Artifact settings](./screenshot2.png)
+## English
 
-## Key Features
+### What it does
 
-- **Smart PDF detection** — direct PDF URLs, arXiv abstract/HTML/PDF pages, and PDF links on regular pages
-- **Import into any notebook** — pick an existing notebook from the "Import to" dropdown, or create a new one
-- **Import-only mode** — add the source without generating any artifacts
-- **Multi-account support** — choose which signed-in Google account to use (gear icon → Google Account)
-- **One-click pipeline** — creates a notebook, adds the source, and starts artifact generation in a single flow
-- **Background progress** — the pipeline keeps running even after you close the popup; a desktop notification and chime fire on completion (both on by default, toggleable in settings)
-- **Local PDF upload** — reads the PDF in the current tab directly, or falls back to a file picker
-- **Rich artifact settings** — toggle and configure Audio Overview, Video, Report, Quiz, Flashcards, Infographic, Slide Deck, Mind Map, and Data Table from the gear panel
+Open a PDF (direct link, arXiv, eprint, or a local file), click the extension, pick a notebook — done. Sources are auto-named with the paper's real title. By default it only imports; artifact generation (audio overview, infographic, quiz, etc.) can be enabled in settings.
 
-## Install
+- **Import to any notebook** — an existing one or a new one, from the dropdown
+- **Real titles** — from PDF metadata, or NotebookLM's own content analysis
+- **Blocked-site fallback** — sites that reject NotebookLM's fetcher (e.g. eprint) are downloaded in your browser and uploaded automatically
+- **Multi-account** — pick which signed-in Google account to use (gear → Google Account)
+- **Fast** — typical imports finish in ~10 seconds
 
-### Option A: From a release (recommended)
+### Install
 
-1. Download the latest `pdf-to-gemini-notebook-vX.Y.Z.zip` from the [Releases page](https://github.com/Drscq/pdf-to-gemini-notebook/releases/latest) and unzip it.
-2. Open `chrome://extensions` in Chrome.
-3. Enable **Developer mode** (top-right corner).
-4. Click **Load unpacked** and select the unzipped folder (the one containing `manifest.json`).
-5. Confirm **PDF to Gemini Notebook** appears in your extension list.
+1. Download and unzip the latest zip from [Releases](https://github.com/Drscq/pdf-to-gemini-notebook/releases/latest) (or clone this repo).
+2. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the folder containing `manifest.json`.
 
-> Note: Chrome does not allow installing zip/crx files directly from outside the Chrome Web Store, so unzipping and loading the folder is the intended install path. Keep the folder in place after installing — Chrome loads the extension from it on every startup.
+### Use
 
-### Option B: From source
+1. Sign in at [notebook.google.com](https://notebook.google.com/).
+2. Open a PDF, click the extension icon, choose the target notebook, click the import button.
+3. For local `file://` PDFs, enable **Allow access to file URLs** in the extension's details first.
 
-1. Clone or download this repository.
-2. Follow steps 2–5 above, selecting the repository root folder.
+### Privacy
 
-## How to Use
+The extension talks only to Google (your session) and the site hosting the PDF — no third-party servers, no tracking, nothing stored locally. Anything you import ends up in your own Gemini Notebook account, so mind sensitive documents. It uses NotebookLM's private web API and may break when Google changes it.
 
-1. Sign in to NotebookLM at `https://notebooklm.google.com` with your Google account.
-2. Open a PDF, arXiv page, or any webpage, then click the extension icon.
-3. Click the action button that matches your situation:
-   - **🎧 Generate Artifacts** — a PDF was detected on the page
-   - **Use Current Webpage URL** — no PDF detected; import the page itself as a source
-   - **Use Current PDF and Generate** — the current tab is a local PDF file
-   - **Upload Local PDF** — pick a PDF from your computer manually
-4. (Optional) Click the gear icon to choose which artifacts to generate and fine-tune their settings.
-5. Track progress in the popup, then open the result via **Open Notebook in NotebookLM**.
+---
 
-## Permissions & Privacy
+## 简体中文
 
-- The extension talks only to `notebooklm.google.com` (using your existing Google session) and to the site hosting the PDF you import. There are no third-party servers, no analytics, and no tracking.
-- Broad host access (`*://*/*`) is required for the fallback that downloads a PDF directly and re-uploads it when NotebookLM refuses a URL import.
-- To read local `file://` PDFs from the current tab, enable **Allow access to file URLs** in the extension's details page.
-- Anything you import — including paywalled or private PDFs your browser session can access — is uploaded to your own Google NotebookLM account. Keep that in mind for sensitive documents.
-- This extension uses NotebookLM's private web API, so behavior may break when Google changes NotebookLM.
+### 功能
 
-## Troubleshooting
+打开一个 PDF（直链、arXiv、eprint 或本地文件），点插件图标，选一个笔记本——完成。来源会自动命名为论文的真实标题。默认只导入；音频概览、信息图、测验等内容生成可在设置中开启。
 
-- **Nothing happens after clicking a button** — make sure you are signed in to NotebookLM first.
-- **Local PDF read fails** — enable **Allow access to file URLs**, reload the extension, and retry.
-- **URL import fails** — the source site may block automated downloads; download the PDF manually and use **Upload Local PDF** instead.
+- **导入到任意笔记本** — 下拉框选择已有笔记本或新建
+- **真实标题** — 来自 PDF 元数据或 NotebookLM 自己的内容分析
+- **拦截站点兜底** — 拒绝 NotebookLM 抓取的网站（如 eprint）会自动改为浏览器下载后上传
+- **多账号** — 可选择使用哪个已登录的 Google 账号（齿轮 → Google Account）
+- **快** — 一般导入约 10 秒完成
 
-## Credits
+### 安装
 
-- Forked from [`mahlernim/chrome-pdf-to-notebooklm`](https://github.com/mahlernim/chrome-pdf-to-notebooklm).
-- NotebookLM protocol implementation was heavily informed by [`teng-lin/notebooklm-py`](https://github.com/teng-lin/notebooklm-py).
+1. 从 [Releases](https://github.com/Drscq/pdf-to-gemini-notebook/releases/latest) 下载最新 zip 并解压（或克隆本仓库）。
+2. 打开 `chrome://extensions`，开启**开发者模式**，点击**加载已解压的扩展程序**，选择含 `manifest.json` 的文件夹。
 
-## License
+### 使用
 
-MIT. See [LICENSE](./LICENSE).
+1. 登录 [notebook.google.com](https://notebook.google.com/)。
+2. 打开 PDF，点插件图标，选目标笔记本，点导入按钮。
+3. 本地 `file://` PDF 需先在扩展详情页开启**允许访问文件网址**。
+
+### 隐私
+
+插件只与 Google（你的会话）和 PDF 所在网站通信——无第三方服务器、无跟踪、本地不存储任何内容。导入的文件会进入你自己的 Gemini Notebook 账户，敏感文档请留意。本插件使用 NotebookLM 非公开 API，Google 改版时可能失效。
+
+---
+
+Formerly *Chrome PDF to NotebookLM* (renamed after Google's rebrand). Forked from [`mahlernim/chrome-pdf-to-notebooklm`](https://github.com/mahlernim/chrome-pdf-to-notebooklm); protocol informed by [`teng-lin/notebooklm-py`](https://github.com/teng-lin/notebooklm-py). MIT licensed — see [LICENSE](./LICENSE).
