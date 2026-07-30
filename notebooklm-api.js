@@ -24,6 +24,8 @@ const RPCMethod = {
   DELETE_NOTEBOOK: 'WWINqb',
   ADD_SOURCE: 'izAoDd',
   ADD_SOURCE_FILE: 'o4cbdc',
+  DELETE_SOURCE: 'tGMBJ',
+  UPDATE_SOURCE: 'b7Wfje',
   CREATE_ARTIFACT: 'R7cb6c',
   LIST_ARTIFACTS: 'gArtLc',
   GENERATE_MIND_MAP: 'yyryJe',
@@ -571,6 +573,26 @@ async function deleteNotebook(notebookId) {
   const params = [[notebookId], [2]];
   await rpcCall(RPCMethod.DELETE_NOTEBOOK, params, '/', true);
   console.log(`[NotebookLM API] Deleted notebook: ${notebookId}`);
+  return { ok: true };
+}
+
+/**
+ * Delete a source from a notebook.
+ */
+async function deleteSource(notebookId, sourceId) {
+  const params = [[[String(sourceId)]]];
+  await rpcCall(RPCMethod.DELETE_SOURCE, params, `/notebook/${notebookId}`, true);
+  console.log(`[NotebookLM API] Deleted source: ${sourceId}`);
+  return { ok: true };
+}
+
+/**
+ * Rename a source.
+ */
+async function renameSource(notebookId, sourceId, newTitle) {
+  const params = [null, [String(sourceId)], [[[String(newTitle)]]]];
+  await rpcCall(RPCMethod.UPDATE_SOURCE, params, `/notebook/${notebookId}`, true);
+  console.log(`[NotebookLM API] Renamed source ${sourceId} -> ${newTitle}`);
   return { ok: true };
 }
 
@@ -1660,6 +1682,8 @@ export {
   deleteNotebook,
   addUrlSource,
   addFileSource,
+  deleteSource,
+  renameSource,
   listSources,
   listNotebooks,
   getNotebookTitle,

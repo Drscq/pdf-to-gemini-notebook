@@ -29,6 +29,7 @@ import {
     deleteNotebook,
     addUrlSource,
     addFileSource,
+    deleteSource,
     listSources,
     listNotebooks,
     getNotebookTitle,
@@ -269,15 +270,65 @@ async function downloadRemotePdfForUpload(pdfUrl, pageUrl = null) {
 }
 
 /**
+ * Derive a short source tag from well-known paper-hosting URLs,
+ * e.g. "eprint-2017-633" or "arXiv-2511.12529".
+ */
+function shortSourceTag(pdfUrl) {
+    if (typeof pdfUrl !== 'string') return null;
+    let m = pdfUrl.match(/eprint\.iacr\.org\/(\d{4})\/(\d+)/i);
+    if (m) return `eprint-${m[1]}-${m[2]}`;
+    m = pdfUrl.match(/arxiv\.org\/(?:pdf|abs|html)\/([\d.]+(?:v\d+)?)/i);
+    if (m) return `arXiv-${m[1]}`;
+    return null;
+}
+
+/**
+ * Build a human-readable upload filename: "<paper title> [<source tag>].pdf".
+ * Falls back to the tag alone, then to the raw filename, when no usable
+ * title is available.
+ */
+function buildNiceFilename(rawTitle, pdfUrl, fallbackName) {
+    const tag = shortSourceTag(pdfUrl);
+    let title = String(rawTitle || '')
+        .replace(/\.pdf$/i, '')
+        .replace(/[\\/:*?"<>|]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    // Ignore titles that are just a URL, a number, or too short to be a paper title.
+    if (/^https?:/i.test(title) || /^[\d.\-_ ]*$/.test(title) || title.length < 8) title = '';
+    if (title.length > 70) title = title.substring(0, 70).trim();
+    if (title && tag) return `${title} [${tag}].pdf`;
+    if (title) return `${title}.pdf`;
+    if (tag) return `${tag}.pdf`;
+    return ensurePdfFilename(fallbackName || 'uploaded.pdf');
+}
+
+function findOpenTabForUrl(tabs, pdfUrl) {
+    const stripHash = (u) => String(u || '').split('#')[0];
+    return tabs.find(t => t.url && stripHash(t.url) === stripHash(pdfUrl)) || null;
+}
+
+/**
+ * Title of an open tab showing the PDF, if any. Chrome's PDF viewer sets the
+ * tab title to the PDF's embedded metadata title when it has one.
+ */
+async function titleFromOpenTab(pdfUrl) {
+    try {
+        const tab = findOpenTabForUrl(await chrome.tabs.query({}), pdfUrl);
+        return tab?.title || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
  * Read the PDF bytes from an open tab showing the URL, fetching in the PAGE
  * context. Sites with anti-bot protection (e.g. eprint.iacr.org) 403 a bare
  * service-worker fetch but allow the page that already passed their check —
  * and the tab has usually cached the PDF bytes anyway.
  */
 async function downloadPdfViaTab(pdfUrl) {
-    const stripHash = (u) => String(u || '').split('#')[0];
-    const tabs = await chrome.tabs.query({});
-    const tab = tabs.find(t => t.url && stripHash(t.url) === stripHash(pdfUrl));
+    const tab = findOpenTabForUrl(await chrome.tabs.query({}), pdfUrl);
     if (!tab?.id) throw new Error('no open tab is showing the PDF URL');
 
     const injected = await chrome.scripting.executeScript({
@@ -304,8 +355,8 @@ async function downloadPdfViaTab(pdfUrl) {
     const result = injected?.[0]?.result;
     if (!result?.ok) throw new Error(result?.error || 'could not read PDF from the open tab');
     return {
-        filename: ensurePdfFilename(filenameFromUrl(pdfUrl) || 'uploaded.pdf'),
-        mimeType: /pdf/i.test(result.mimeType) ? 'application/pdf' : 'application/pdf',
+        filename: buildNiceFilename(tab.title, pdfUrl, filenameFromUrl(pdfUrl)),
+        mimeType: 'application/pdf',
         fileData: result.dataBase64,
     };
 }
@@ -316,7 +367,12 @@ async function downloadPdfViaTab(pdfUrl) {
  */
 async function acquirePdfForUpload(pdfUrl, pageUrl) {
     try {
-        return await downloadRemotePdfForUpload(pdfUrl, pageUrl);
+        const file = await downloadRemotePdfForUpload(pdfUrl, pageUrl);
+        // Upgrade the raw filename (e.g. "633.pdf") to a readable one when an
+        // open tab can tell us the paper title.
+        const tabTitle = await titleFromOpenTab(pdfUrl);
+        file.filename = buildNiceFilename(tabTitle, pdfUrl, file.filename);
+        return file;
     } catch (directErr) {
         console.warn('[Pipeline] Direct PDF download failed, trying open tab:', directErr?.message);
         try {
@@ -681,6 +737,13 @@ async function tickSourcePoll(state) {
                     fallbackFile.mimeType
                 );
                 if (!retrySource.id) throw new Error('fallback upload returned no source ID');
+                // Remove the dead URL source so the notebook isn't left with a
+                // broken entry next to the uploaded copy.
+                try {
+                    await deleteSource(state.notebookId, state.sourceId);
+                } catch (delErr) {
+                    console.warn('[Tick] Could not delete failed URL source:', delErr?.message);
+                }
                 await setState({
                     sourceId: retrySource.id,
                     step: 'wait_source',
