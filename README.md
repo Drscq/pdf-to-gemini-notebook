@@ -1,91 +1,70 @@
-﻿# Chrome PDF to NotebookLM
+# Chrome PDF to NotebookLM
 
-Turn a PDF, arXiv page, or webpage into a NotebookLM notebook and generate artifacts in one workflow.
+**English** | [简体中文](./README.zh-CN.md)
+
+Turn a PDF, arXiv page, or webpage into a NotebookLM notebook and generate artifacts (audio overview, infographic, and more) in one click.
 
 ## Screenshots
+
 ![Pipeline progress](./screenshot1.png)
 ![Artifact settings](./screenshot2.png)
 
-## 한국어 안내
+## Key Features
 
-### 소개
-**Chrome PDF to NotebookLM**은 현재 탭의 PDF/웹페이지/로컬 파일을 NotebookLM 소스로 추가하고, 오디오 개요를 포함한 아티팩트 생성을 자동으로 진행하는 크롬 확장 프로그램입니다.
+- **Smart PDF detection** — direct PDF URLs, arXiv abstract/HTML/PDF pages, and PDF links on regular pages
+- **One-click pipeline** — creates a notebook, adds the source, and starts artifact generation in a single flow
+- **Background progress** — the pipeline keeps running even after you close the popup; a desktop notification and chime fire on completion (both on by default, toggleable in settings)
+- **Local PDF upload** — reads the PDF in the current tab directly, or falls back to a file picker
+- **Rich artifact settings** — toggle and configure Audio Overview, Video, Report, Quiz, Flashcards, Infographic, Slide Deck, Mind Map, and Data Table from the gear panel
 
-### 주요 기능
-- PDF 자동 감지: 직접 PDF URL, arXiv 페이지, 페이지 내 PDF 링크 감지
-- 원클릭 실행: 노트북 생성부터 소스 추가, 아티팩트 생성까지 한 번에 실행
-- 백그라운드 진행: 팝업을 닫아도 진행 상태 유지
-- 로컬 PDF 업로드 지원: 필요 시 파일 선택으로 업로드
-- 아티팩트 설정 제공: Audio/Infographic 등 생성 옵션 조절
+## Install
 
-### 설치 (개발자 모드)
-1. 이 저장소를 다운로드 또는 클론합니다.
-2. Chrome에서 `chrome://extensions`를 엽니다.
-3. 우측 상단에서 **개발자 모드**를 켭니다.
-4. **압축해제된 확장 프로그램을 로드**를 클릭합니다.
-5. 이 저장소의 루트 폴더(현재 `manifest.json`이 있는 폴더)를 선택합니다.
-6. 확장 목록에서 **Chrome PDF to NotebookLM**이 보이면 설치 완료입니다.
+### Option A: From a release (recommended)
 
-### 사용 방법
-1. NotebookLM(`https://notebooklm.google.com`)에 Google 계정으로 로그인합니다.
-2. PDF/arXiv/웹페이지를 연 뒤 확장 아이콘을 클릭합니다.
-3. 상황에 맞게 아래 버튼 중 하나를 선택합니다.
-- `Generate Audio Overview` (PDF 감지됨)
-- `Use Current Webpage URL` (PDF 미감지)
-- `Upload Local PDF` 또는 `Use Current PDF and Generate` (로컬 파일)
-4. 진행 화면에서 상태를 확인하고 완료 후 `Open Notebook in NotebookLM`으로 이동합니다.
-
-### 권한 관련 안내
-- 로컬 `file://` PDF를 현재 탭에서 직접 읽으려면 확장 상세 설정에서 **파일 URL에 대한 액세스 허용**을 켜야 할 수 있습니다.
-- 권한과 동작은 NotebookLM 및 Chrome 정책 변경에 따라 영향을 받을 수 있습니다.
-
-### 문제 해결
-- 버튼 동작이 없으면: NotebookLM 로그인 상태를 먼저 확인하세요.
-- 로컬 PDF 읽기 실패 시: `Allow access to file URLs` 활성화 후 다시 시도하세요.
-- URL 소스 추가 실패 시: `Upload Local PDF` 방식으로 업로드를 시도하세요.
-
----
-
-## English Guide
-
-### Overview
-**Chrome PDF to NotebookLM** is a Chrome extension that takes a PDF/web source from your current tab, adds it to NotebookLM, and runs artifact generation (including audio overview) in a streamlined flow.
-
-### Key Features
-- Smart PDF detection: direct PDF URLs, arXiv pages, and PDF links on pages
-- One-click pipeline: notebook creation, source add, and artifact generation
-- Background progress: keeps running even when the popup is closed
-- Local PDF upload support with fallback file picker
-- Artifact settings for Audio/Infographic and more
-
-### Install (Developer Mode)
-1. Download or clone this repository.
+1. Download the latest `chrome-pdf-to-notebooklm-vX.Y.Z.zip` from the [Releases page](https://github.com/Drscq/chrome-pdf-to-notebooklm/releases/latest) and unzip it.
 2. Open `chrome://extensions` in Chrome.
-3. Enable **Developer mode**.
-4. Click **Load unpacked**.
-5. Select the repository root folder (the folder that contains `manifest.json`).
-6. Confirm **Chrome PDF to NotebookLM** appears in your extension list.
+3. Enable **Developer mode** (top-right corner).
+4. Click **Load unpacked** and select the unzipped folder (the one containing `manifest.json`).
+5. Confirm **Chrome PDF to NotebookLM** appears in your extension list.
 
-### How to Use
-1. Sign in to NotebookLM at `https://notebooklm.google.com`.
-2. Open a PDF/arXiv/webpage and click the extension icon.
-3. Choose the appropriate action:
-- `Generate Audio Overview` (when PDF is detected)
-- `Use Current Webpage URL` (when no PDF is detected)
-- `Upload Local PDF` or `Use Current PDF and Generate` (for local files)
-4. Track progress in the popup and open results via `Open Notebook in NotebookLM`.
+> Note: Chrome does not allow installing zip/crx files directly from outside the Chrome Web Store, so unzipping and loading the folder is the intended install path. Keep the folder in place after installing — Chrome loads the extension from it on every startup.
 
-### Permission Notes
-- For direct reading of local `file://` PDFs from the current tab, you may need to enable **Allow access to file URLs** in extension settings.
-- Behavior can be affected by NotebookLM and Chrome policy changes.
+### Option B: From source
 
-### Troubleshooting
-- No progress after start: verify you are logged into NotebookLM.
-- Local PDF read fails: enable `Allow access to file URLs` and retry.
-- URL import fails: use `Upload Local PDF` as a fallback.
+1. Clone or download this repository.
+2. Follow steps 2–5 above, selecting the repository root folder.
+
+## How to Use
+
+1. Sign in to NotebookLM at `https://notebooklm.google.com` with your Google account.
+2. Open a PDF, arXiv page, or any webpage, then click the extension icon.
+3. Click the action button that matches your situation:
+   - **🎧 Generate Artifacts** — a PDF was detected on the page
+   - **Use Current Webpage URL** — no PDF detected; import the page itself as a source
+   - **Use Current PDF and Generate** — the current tab is a local PDF file
+   - **Upload Local PDF** — pick a PDF from your computer manually
+4. (Optional) Click the gear icon to choose which artifacts to generate and fine-tune their settings.
+5. Track progress in the popup, then open the result via **Open Notebook in NotebookLM**.
+
+## Permissions & Privacy
+
+- The extension talks only to `notebooklm.google.com` (using your existing Google session) and to the site hosting the PDF you import. There are no third-party servers, no analytics, and no tracking.
+- Broad host access (`*://*/*`) is required for the fallback that downloads a PDF directly and re-uploads it when NotebookLM refuses a URL import.
+- To read local `file://` PDFs from the current tab, enable **Allow access to file URLs** in the extension's details page.
+- Anything you import — including paywalled or private PDFs your browser session can access — is uploaded to your own Google NotebookLM account. Keep that in mind for sensitive documents.
+- This extension uses NotebookLM's private web API, so behavior may break when Google changes NotebookLM.
+
+## Troubleshooting
+
+- **Nothing happens after clicking a button** — make sure you are signed in to NotebookLM first.
+- **Local PDF read fails** — enable **Allow access to file URLs**, reload the extension, and retry.
+- **URL import fails** — the source site may block automated downloads; download the PDF manually and use **Upload Local PDF** instead.
 
 ## Credits
+
+- Forked from [`mahlernim/chrome-pdf-to-notebooklm`](https://github.com/mahlernim/chrome-pdf-to-notebooklm).
 - NotebookLM protocol implementation was heavily informed by [`teng-lin/notebooklm-py`](https://github.com/teng-lin/notebooklm-py).
 
 ## License
+
 MIT. See [LICENSE](./LICENSE).
