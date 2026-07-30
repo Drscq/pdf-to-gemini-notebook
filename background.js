@@ -268,6 +268,66 @@ async function downloadRemotePdfForUpload(pdfUrl, pageUrl = null) {
     };
 }
 
+/**
+ * Read the PDF bytes from an open tab showing the URL, fetching in the PAGE
+ * context. Sites with anti-bot protection (e.g. eprint.iacr.org) 403 a bare
+ * service-worker fetch but allow the page that already passed their check —
+ * and the tab has usually cached the PDF bytes anyway.
+ */
+async function downloadPdfViaTab(pdfUrl) {
+    const stripHash = (u) => String(u || '').split('#')[0];
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find(t => t.url && stripHash(t.url) === stripHash(pdfUrl));
+    if (!tab?.id) throw new Error('no open tab is showing the PDF URL');
+
+    const injected = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: async (srcUrl) => {
+            try {
+                const response = await fetch(srcUrl, { credentials: 'include', cache: 'force-cache' });
+                if (!response.ok) return { ok: false, error: `HTTP ${response.status} in page context` };
+                const blob = await response.blob();
+                const bytes = new Uint8Array(await blob.arrayBuffer());
+                let bin = '';
+                const CHUNK = 0x8000;
+                for (let i = 0; i < bytes.length; i += CHUNK) {
+                    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+                }
+                return { ok: true, dataBase64: btoa(bin), mimeType: blob.type || 'application/pdf' };
+            } catch (e) {
+                return { ok: false, error: e?.message || 'page-context fetch failed' };
+            }
+        },
+        args: [pdfUrl],
+    });
+
+    const result = injected?.[0]?.result;
+    if (!result?.ok) throw new Error(result?.error || 'could not read PDF from the open tab');
+    return {
+        filename: ensurePdfFilename(filenameFromUrl(pdfUrl) || 'uploaded.pdf'),
+        mimeType: /pdf/i.test(result.mimeType) ? 'application/pdf' : 'application/pdf',
+        fileData: result.dataBase64,
+    };
+}
+
+/**
+ * Get PDF bytes for a fallback upload: try a direct download first, then fall
+ * back to reading from an open tab showing the PDF.
+ */
+async function acquirePdfForUpload(pdfUrl, pageUrl) {
+    try {
+        return await downloadRemotePdfForUpload(pdfUrl, pageUrl);
+    } catch (directErr) {
+        console.warn('[Pipeline] Direct PDF download failed, trying open tab:', directErr?.message);
+        try {
+            return await downloadPdfViaTab(pdfUrl);
+        } catch (tabErr) {
+            // Surface the direct-download error (usually the more meaningful one)
+            throw new Error(`${directErr?.message || 'download failed'}; tab read also failed: ${tabErr?.message}`);
+        }
+    }
+}
+
 // =========================================================================
 // Extension icon badge
 // =========================================================================
@@ -613,7 +673,7 @@ async function tickSourcePoll(state) {
                 stepDetail: 'NotebookLM could not fetch the URL (site blocked it). Downloading the PDF and uploading directly...',
             });
             try {
-                const fallbackFile = await downloadRemotePdfForUpload(state.pdfUrl, state.pageUrl);
+                const fallbackFile = await acquirePdfForUpload(state.pdfUrl, state.pageUrl);
                 const retrySource = await addFileSource(
                     state.notebookId,
                     fallbackFile.filename,
@@ -1009,7 +1069,7 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
                 });
 
                 try {
-                    const fallbackFile = await downloadRemotePdfForUpload(pdfUrl, pageUrl);
+                    const fallbackFile = await acquirePdfForUpload(pdfUrl, pageUrl);
                     source = await addFileSource(
                         notebookId,
                         fallbackFile.filename,
