@@ -35,7 +35,7 @@ const DEFAULTS = {
     generateSlideDeck: false, slideDeckFormat: 'detailed_deck', slideDeckLength: 'default', slideDeckPrompt: '',
     generateMindMap: false,
     generateDataTable: false, dataTablePrompt: '',
-    targetNotebookId: '', targetNotebookLabel: '', importOnly: false, accountAuthuser: '',
+    targetNotebookId: '', targetNotebookLabel: '', importOnly: true, accountAuthuser: '',
     notificationEnabled: true,
     chimeEnabled: true, autoOpenNotebook: false,
 };
@@ -377,9 +377,21 @@ function wireSettingsListeners() {
 
 async function init() {
     const state = await getState();
-    if (state.status === 'running' || state.status === 'completed' || state.status === 'error') {
+    if (state.status === 'running' || state.status === 'error') {
         renderProgress(state);
         if (state.status === 'running') startPolling();
+        return;
+    }
+    if (state.status === 'completed') {
+        // Auto-reset so the popup is immediately ready to import the current
+        // tab, keeping a compact link to the just-finished notebook.
+        await chrome.runtime.sendMessage({ type: 'RESET_STATE' });
+        await detectAndRender();
+        if (state.notebookUrl) {
+            const title = state.notebookTitle ? escapeHtml(state.notebookTitle) : 'notebook';
+            contentEl.insertAdjacentHTML('afterbegin',
+                `<a class="last-import-banner" href="${state.notebookUrl}" target="_blank" title="Open the last imported notebook">✅ Last import ready: ${title} ↗</a>`);
+        }
         return;
     }
     await detectAndRender();

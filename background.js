@@ -30,6 +30,7 @@ import {
     addUrlSource,
     addFileSource,
     deleteSource,
+    renameSource,
     listSources,
     listNotebooks,
     getNotebookTitle,
@@ -77,6 +78,7 @@ const INITIAL_STATE = {
     sourceId: null,
     createdNewNotebook: false, // true when this run created the notebook (safe to delete on failure)
     uploadFallbackTried: false, // guards the one-shot download+upload retry after URL ingestion errors
+    niceSourceTitle: null,   // preferred source title (from PDF metadata) applied after ingestion
     importOnly: false,       // snapshot of the import-only setting for this run
     authuser: '',
     settingsSnapshot: null,
@@ -291,7 +293,7 @@ function buildNiceFilename(rawTitle, pdfUrl, fallbackName) {
     const tag = shortSourceTag(pdfUrl);
     let title = String(rawTitle || '')
         .replace(/\.pdf$/i, '')
-        .replace(/[\\/:*?"<>|]/g, ' ')
+        .replace(/[\\/:*?"<>|_]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
     // Ignore titles that are just a URL, a number, or too short to be a paper title.
@@ -442,7 +444,7 @@ const DEFAULT_SETTINGS = {
     dataTablePrompt: '',
     // Import behavior
     targetNotebookId: '',      // '' = create a new notebook; otherwise an existing notebook ID
-    importOnly: false,         // true = add the source and stop (no artifact generation)
+    importOnly: true,          // true = add the source and stop (no artifact generation)
     accountAuthuser: '',       // '' = default Google session; otherwise an authuser index
     // UX
     notificationEnabled: true,
@@ -774,7 +776,18 @@ async function tickSourcePoll(state) {
         return;
     }
 
-    // Source is READY. In import-only mode we're done; otherwise trigger artifacts.
+    // Source is READY. Give URL sources a readable title first — NotebookLM
+    // leaves them named as the raw URL.
+    if (state.niceSourceTitle && /^https?:\/\//i.test(String(source.title || '').trim())) {
+        try {
+            await renameSource(state.notebookId, state.sourceId, state.niceSourceTitle);
+            console.log(`[Tick] Renamed source to: ${state.niceSourceTitle}`);
+        } catch (renameErr) {
+            console.warn('[Tick] Could not rename source:', renameErr?.message);
+        }
+    }
+
+    // In import-only mode we're done; otherwise trigger artifacts.
     if (state.importOnly) {
         console.log('[Tick] Source ready, import-only mode -- completing');
         await completeImportOnly(state);
@@ -1050,6 +1063,17 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
         const settings = await getSettings();
         setAuthuser(settings.accountAuthuser);
 
+        // Capture the preferred source title now, while the PDF tab is open:
+        // URL sources keep the raw URL as their NotebookLM title, so we rename
+        // them after ingestion using the tab's PDF-metadata title.
+        let niceSourceTitle = null;
+        if (!uploadFile && !isWebpageSourceType(effectiveSourceType) && /^https?:\/\//i.test(pdfUrl || '')) {
+            try {
+                const tabTitle = await titleFromOpenTab(pdfUrl);
+                niceSourceTitle = buildNiceFilename(tabTitle, pdfUrl, filenameFromUrl(pdfUrl));
+            } catch (_) { /* cosmetic only */ }
+        }
+
         // Step 1: Authenticate
         await setState({
             status: 'running',
@@ -1064,6 +1088,7 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
             sourceId: null,
             createdNewNotebook: false,
             uploadFallbackTried: false,
+            niceSourceTitle,
             importOnly: !!settings.importOnly,
             authuser: settings.accountAuthuser ?? '',
             settingsSnapshot: settings,
