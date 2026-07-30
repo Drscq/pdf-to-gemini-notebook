@@ -794,9 +794,11 @@ async function addUrlSource(notebookId, url) {
   if (!sourceId) {
     // Confirm the add by looking for a source that references this URL,
     // preferring sources that were not in the notebook before the add.
+    // Check quickly first, then back off.
+    const CONFIRM_DELAYS_MS = [800, 1500, 2500, 4000, 4000, 4000];
     let existingMatch = null;
-    for (let attempt = 0; attempt < 6 && !sourceId; attempt++) {
-      await sleep(2500);
+    for (let attempt = 0; attempt < CONFIRM_DELAYS_MS.length && !sourceId; attempt++) {
+      await sleep(CONFIRM_DELAYS_MS[attempt]);
       try {
         const sources = await listSourcesRaw(notebookId);
         const candidates = sources.filter(entry => JSON.stringify(entry.raw).includes(url));

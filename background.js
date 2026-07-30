@@ -1188,6 +1188,36 @@ async function tickArtifactPoll(state) {
     }
 }
 
+/**
+ * In-worker fast poll driving the same tickSourcePoll state machine at a
+ * 3-second cadence for the first ~40 seconds of a run. Exits as soon as the
+ * pipeline completes, fails, or moves past source ingestion; the backup
+ * alarm (first fire at 60 s) covers the long tail and worker restarts.
+ */
+async function fastSourcePoll(maxMs = 40000, intervalMs = 3000) {
+    const start = Date.now();
+    while (Date.now() - start < maxMs) {
+        await sleep(intervalMs);
+        let state;
+        try {
+            state = await getState();
+        } catch (_) {
+            return;
+        }
+        if (!state || state.status !== 'running') return;
+        if (state.step === 'wait_source') {
+            try {
+                await tickSourcePoll(state);
+            } catch (e) {
+                console.warn('[FastPoll] tick error:', e?.message);
+            }
+        } else if (state.step !== 'fallback_upload') {
+            // Moved on (artifact generation etc.) -- the alarm takes over.
+            return;
+        }
+    }
+}
+
 // =========================================================================
 // Alarm listener -- the heart of long-running polling
 // =========================================================================
@@ -1395,12 +1425,19 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
         });
 
         chrome.alarms.clear(ALARM_NAME);
+        // Backup alarm for long ingestions and service-worker restarts. Its
+        // first fire is delayed past the fast in-worker poll below so the two
+        // never race a tick.
         // NOTE: Chrome enforces a minimum of 1 minute for periodInMinutes in
         // Web Store (production) extensions. Since this extension is loaded as
         // an unpacked developer extension, shorter periods work fine.
-        // Change to periodInMinutes: 1 if you ever publish to the Web Store.
-        chrome.alarms.create(ALARM_NAME, { periodInMinutes: 0.25 }); // 15 seconds
-        console.log('[Pipeline] Alarm-based polling started (15 s interval)');
+        chrome.alarms.create(ALARM_NAME, { delayInMinutes: 1, periodInMinutes: 0.25 });
+        console.log('[Pipeline] Fast polling started (3 s interval; alarm backup from 60 s)');
+
+        // Fast path: most ingestions finish in seconds. Poll inline every 3 s
+        // for up to ~40 s — each storage call resets the MV3 idle timer, so
+        // the worker stays alive. Long ingestions fall back to the alarm.
+        await fastSourcePoll();
 
     } catch (err) {
         const msg = err?.message || 'Unknown error';
