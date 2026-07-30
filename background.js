@@ -285,24 +285,115 @@ function shortSourceTag(pdfUrl) {
 }
 
 /**
+ * A title is "informative" when it plausibly reads as a document title —
+ * not a URL, a domain/path, a bare number, or one of our own source tags.
+ */
+function isInformativeTitle(value) {
+    const title = String(value || '').replace(/\.pdf$/i, '').trim();
+    if (title.length < 8) return false;
+    if (/^https?:/i.test(title)) return false;
+    if (/\b[a-z0-9-]+\.(?:org|com|net|edu|io|gov|app)\b/i.test(title)) return false;
+    if (/^[\d.\-_ ]*$/.test(title)) return false;
+    if (/^(?:eprint|arxiv)[-\s]/i.test(title)) return false;
+    return true;
+}
+
+function sanitizeTitle(rawTitle) {
+    let title = String(rawTitle || '')
+        .replace(/\.pdf$/i, '')
+        .replace(/[\\/:*?"<>|_]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (title.length > 70) title = title.substring(0, 70).trim();
+    return title;
+}
+
+/**
  * Build a human-readable upload filename: "<paper title> [<source tag>].pdf".
  * Falls back to the tag alone, then to the raw filename, when no usable
  * title is available.
  */
 function buildNiceFilename(rawTitle, pdfUrl, fallbackName) {
     const tag = shortSourceTag(pdfUrl);
-    let title = String(rawTitle || '')
-        .replace(/\.pdf$/i, '')
-        .replace(/[\\/:*?"<>|_]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    // Ignore titles that are just a URL, a number, or too short to be a paper title.
-    if (/^https?:/i.test(title) || /^[\d.\-_ ]*$/.test(title) || title.length < 8) title = '';
-    if (title.length > 70) title = title.substring(0, 70).trim();
+    const title = isInformativeTitle(rawTitle) ? sanitizeTitle(rawTitle) : '';
     if (title && tag) return `${title} [${tag}].pdf`;
     if (title) return `${title}.pdf`;
     if (tag) return `${tag}.pdf`;
     return ensurePdfFilename(fallbackName || 'uploaded.pdf');
+}
+
+/**
+ * Extract the document title embedded in the PDF itself: the Info dict's
+ * /Title entry (literal or hex string, ASCII or UTF-16BE) or the XMP
+ * <dc:title>. Returns null when the PDF carries no usable title.
+ */
+function extractPdfTitleFromBytes(input) {
+    try {
+        let bytes;
+        if (typeof input === 'string') {
+            const bin = atob(input);
+            bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        } else {
+            bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : input;
+        }
+
+        let raw = '';
+        const CHUNK = 0x8000;
+        for (let i = 0; i < bytes.length; i += CHUNK) {
+            raw += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + CHUNK, bytes.length)));
+        }
+
+        const decodeUtf16IfBom = (s) => {
+            if (s.length >= 2 && s.charCodeAt(0) === 0xFE && s.charCodeAt(1) === 0xFF) {
+                let out = '';
+                for (let i = 2; i + 1 < s.length; i += 2) {
+                    out += String.fromCharCode((s.charCodeAt(i) << 8) | s.charCodeAt(i + 1));
+                }
+                return out;
+            }
+            return s;
+        };
+
+        let best = null;
+        // Literal string: /Title (Some \(escaped\) title)
+        const litRe = /\/Title\s*\(((?:\\.|[^\\()])*)\)/g;
+        let m;
+        while ((m = litRe.exec(raw))) {
+            let s = m[1]
+                .replace(/\\(\d{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
+                .replace(/\\([()\\])/g, '$1')
+                .replace(/\\[nrt]/g, ' ');
+            s = decodeUtf16IfBom(s).trim();
+            if (s) best = s; // later occurrences win (incremental updates append)
+        }
+        // Hex string: /Title <FEFF0043...>
+        if (!best) {
+            const hexRe = /\/Title\s*<([0-9A-Fa-f\s]+)>/g;
+            while ((m = hexRe.exec(raw))) {
+                const hex = m[1].replace(/\s+/g, '');
+                let s = '';
+                if (/^FEFF/i.test(hex)) {
+                    for (let i = 4; i + 3 < hex.length; i += 4) s += String.fromCharCode(parseInt(hex.substr(i, 4), 16));
+                } else {
+                    for (let i = 0; i + 1 < hex.length; i += 2) s += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+                }
+                s = s.trim();
+                if (s) best = s;
+            }
+        }
+        // XMP metadata: <dc:title>...<rdf:li ...>Title</rdf:li>
+        if (!best) {
+            m = raw.match(/<dc:title>[\s\S]{0,400}?<rdf:li[^>]*>([\s\S]*?)<\/rdf:li>/);
+            if (m) {
+                const s = m[1].replace(/<[^>]+>/g, '').trim();
+                if (s) best = s;
+            }
+        }
+        return best && isInformativeTitle(best) ? best : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 function findOpenTabForUrl(tabs, pdfUrl) {
@@ -356,8 +447,9 @@ async function downloadPdfViaTab(pdfUrl) {
 
     const result = injected?.[0]?.result;
     if (!result?.ok) throw new Error(result?.error || 'could not read PDF from the open tab');
+    const embeddedTitle = extractPdfTitleFromBytes(result.dataBase64);
     return {
-        filename: buildNiceFilename(tab.title, pdfUrl, filenameFromUrl(pdfUrl)),
+        filename: buildNiceFilename(embeddedTitle || tab.title, pdfUrl, filenameFromUrl(pdfUrl)),
         mimeType: 'application/pdf',
         fileData: result.dataBase64,
     };
@@ -370,10 +462,11 @@ async function downloadPdfViaTab(pdfUrl) {
 async function acquirePdfForUpload(pdfUrl, pageUrl) {
     try {
         const file = await downloadRemotePdfForUpload(pdfUrl, pageUrl);
-        // Upgrade the raw filename (e.g. "633.pdf") to a readable one when an
-        // open tab can tell us the paper title.
-        const tabTitle = await titleFromOpenTab(pdfUrl);
-        file.filename = buildNiceFilename(tabTitle, pdfUrl, file.filename);
+        // Upgrade the raw filename (e.g. "633.pdf") to a readable one, taking
+        // the title from the PDF's own metadata first, then the open tab.
+        const embeddedTitle = extractPdfTitleFromBytes(file.fileData);
+        const tabTitle = embeddedTitle ? null : await titleFromOpenTab(pdfUrl);
+        file.filename = buildNiceFilename(embeddedTitle || tabTitle, pdfUrl, file.filename);
         return file;
     } catch (directErr) {
         console.warn('[Pipeline] Direct PDF download failed, trying open tab:', directErr?.message);
@@ -776,14 +869,30 @@ async function tickSourcePoll(state) {
         return;
     }
 
-    // Source is READY. Give URL sources a readable title first — NotebookLM
-    // leaves them named as the raw URL.
-    if (state.niceSourceTitle && /^https?:\/\//i.test(String(source.title || '').trim())) {
-        try {
-            await renameSource(state.notebookId, state.sourceId, state.niceSourceTitle);
-            console.log(`[Tick] Renamed source to: ${state.niceSourceTitle}`);
-        } catch (renameErr) {
-            console.warn('[Tick] Could not rename source:', renameErr?.message);
+    // Source is READY. If its title is still uninformative (URL sources keep
+    // the raw URL; uploads may carry a tag-only name), rename it using the
+    // best content-derived title available: for notebooks created this run,
+    // NotebookLM's own auto-generated notebook title IS the document title.
+    if (!isInformativeTitle(source.title)) {
+        let bestTitle = null;
+        if (state.createdNewNotebook) {
+            try {
+                const nbTitle = await getNotebookTitle(state.notebookId);
+                if (isInformativeTitle(nbTitle)) bestTitle = nbTitle;
+            } catch (_) { /* cosmetic only */ }
+        }
+        if (!bestTitle && isInformativeTitle(state.niceSourceTitle)) {
+            bestTitle = state.niceSourceTitle;
+        }
+        if (bestTitle) {
+            const tag = shortSourceTag(state.pdfUrl);
+            const newName = `${sanitizeTitle(bestTitle)}${tag ? ` [${tag}]` : ''}.pdf`;
+            try {
+                await renameSource(state.notebookId, state.sourceId, newName);
+                console.log(`[Tick] Renamed source to: ${newName}`);
+            } catch (renameErr) {
+                console.warn('[Tick] Could not rename source:', renameErr?.message);
+            }
         }
     }
 
@@ -1063,14 +1172,14 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
         const settings = await getSettings();
         setAuthuser(settings.accountAuthuser);
 
-        // Capture the preferred source title now, while the PDF tab is open:
-        // URL sources keep the raw URL as their NotebookLM title, so we rename
-        // them after ingestion using the tab's PDF-metadata title.
+        // Capture the preferred source title (bare title, no tag/extension)
+        // now, while the PDF tab is open: URL sources keep the raw URL as
+        // their NotebookLM title, so we rename them after ingestion.
         let niceSourceTitle = null;
         if (!uploadFile && !isWebpageSourceType(effectiveSourceType) && /^https?:\/\//i.test(pdfUrl || '')) {
             try {
                 const tabTitle = await titleFromOpenTab(pdfUrl);
-                niceSourceTitle = buildNiceFilename(tabTitle, pdfUrl, filenameFromUrl(pdfUrl));
+                niceSourceTitle = isInformativeTitle(tabTitle) ? sanitizeTitle(tabTitle) : null;
             } catch (_) { /* cosmetic only */ }
         }
 
