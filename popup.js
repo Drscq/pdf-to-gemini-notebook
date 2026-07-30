@@ -15,7 +15,7 @@ const STEPS = [
         keys: ['generate_artifacts',
             'wait_artifacts'], label: 'Generate Artifacts', emoji: '🎧'
     },
-    { keys: ['done'], label: 'Complete', emoji: '✅' },
+    { keys: ['done', 'polish_title'], label: 'Complete', emoji: '✅' },
 ];
 
 
@@ -384,8 +384,12 @@ async function init() {
     }
     if (state.status === 'completed') {
         // Auto-reset so the popup is immediately ready to import the current
-        // tab, keeping a compact link to the just-finished notebook.
-        await chrome.runtime.sendMessage({ type: 'RESET_STATE' });
+        // tab, keeping a compact link to the just-finished notebook. While a
+        // background title polish is still running, skip the reset so its
+        // state (and alarm) survive; it finishes by itself within ~2 min.
+        if (state.step !== 'polish_title') {
+            await chrome.runtime.sendMessage({ type: 'RESET_STATE' });
+        }
         await detectAndRender();
         if (state.notebookUrl) {
             const title = state.notebookTitle ? escapeHtml(state.notebookTitle) : 'notebook';

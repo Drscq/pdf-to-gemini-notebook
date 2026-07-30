@@ -754,8 +754,10 @@ async function completePipeline() {
     console.log('[Pipeline] Completed successfully');
 }
 
-async function completeImportOnly(state) {
-    chrome.alarms.clear(ALARM_NAME);
+async function completeImportOnly(state, { polishTitle = false } = {}) {
+    // Keep the alarm alive when a background title upgrade is still pending;
+    // the polish phase below clears it.
+    if (!polishTitle) chrome.alarms.clear(ALARM_NAME);
     const settings = await getSettings();
 
     let notebookTitle = state.notebookTitle;
@@ -766,10 +768,11 @@ async function completeImportOnly(state) {
     setBadge('✓', '#0fad6e');  // green check
     await setState({
         status: 'completed',
-        step: 'done',
+        step: polishTitle ? 'polish_title' : 'done',
         notebookTitle,
         stepDetail: 'Source imported to notebook. No artifacts were requested.',
         completedAt: new Date().toISOString(),
+        stepStartedAt: new Date().toISOString(),
     });
 
     if (settings.chimeEnabled) {
@@ -964,19 +967,16 @@ async function tickSourcePoll(state) {
         }
     }
 
-    // In import-only mode: wait for the auto title (if pending), then done.
+    // In import-only mode: complete immediately. A pending title upgrade
+    // continues in the background (polish phase) and must never block the
+    // user-visible completion.
     if (state.importOnly) {
-        if (titleUpgradePending) {
-            console.log('[Tick] Source ready, waiting for NotebookLM title before completing');
-            await setState({
-                step: 'wait_title',
-                stepStartedAt: new Date().toISOString(),
-                stepDetail: 'Source imported. Waiting for NotebookLM to derive the document title...',
-            });
-            return;
+        let stillPending = titleUpgradePending;
+        if (stillPending && await upgradeSourceTitle(state)) {
+            stillPending = false;
         }
         console.log('[Tick] Source ready, import-only mode -- completing');
-        await completeImportOnly(state);
+        await completeImportOnly(state, { polishTitle: stillPending });
         return;
     }
 
@@ -1137,32 +1137,6 @@ async function tickSourcePoll(state) {
 }
 
 /**
- * One tick of the wait_title phase (import-only, newly created notebooks):
- * wait briefly for NotebookLM's auto-generated title, rename the source with
- * it, then complete. Completes without the upgrade after 90 seconds.
- */
-async function tickTitleWait(state) {
-    const TITLE_TIMEOUT_MS = 90000;
-    const elapsed = Date.now() - new Date(state.stepStartedAt).getTime();
-
-    if (await upgradeSourceTitle(state)) {
-        await completeImportOnly(await getState());
-        return;
-    }
-
-    if (elapsed > TITLE_TIMEOUT_MS) {
-        console.log('[Tick] Gave up waiting for auto title; completing');
-        await setState({ titleUpgradePending: false });
-        await completeImportOnly(state);
-        return;
-    }
-
-    await setState({
-        stepDetail: `Source imported. Waiting for NotebookLM to derive the document title (${Math.round(elapsed / 1000)}s)...`,
-    });
-}
-
-/**
  * One tick of the artifact-polling phase.
  * Polls all artifact tasks. Calls completePipeline() when all have settled.
  */
@@ -1223,6 +1197,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     const state = await getState();
 
+    // Background title polish: the import already completed; keep quietly
+    // retrying the content-derived rename for up to 2 minutes.
+    if (state && state.status === 'completed' && state.step === 'polish_title') {
+        setAuthuser(state.authuser);
+        const elapsed = Date.now() - new Date(state.stepStartedAt).getTime();
+        if (await upgradeSourceTitle(state) || elapsed > 120000) {
+            await setState({ step: 'done', titleUpgradePending: false });
+            chrome.alarms.clear(ALARM_NAME);
+        }
+        return;
+    }
+
     if (!state || state.status !== 'running') {
         chrome.alarms.clear(ALARM_NAME);
         return;
@@ -1235,7 +1221,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (state.step === 'wait_source') {
         await tickSourcePoll(state);
     } else if (state.step === 'wait_title') {
-        await tickTitleWait(state);
+        // Legacy state from v1.1.4: complete now and finish the rename in the
+        // background polish phase.
+        await completeImportOnly(state, { polishTitle: true });
     } else if (state.step === 'fallback_upload') {
         if (Date.now() - new Date(state.stepStartedAt).getTime() > 240000) {
             await failPipeline(
