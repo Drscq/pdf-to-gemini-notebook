@@ -10,7 +10,7 @@ const contentEl = document.getElementById('content');
 const STEPS = [
     { keys: ['auth', 'create_notebook'], label: 'Setup', emoji: '🔑' },
     { keys: ['add_source'], label: 'Add Source', emoji: '📄' },
-    { keys: ['wait_source'], label: 'Processing Source', emoji: '⏳' },
+    { keys: ['wait_source', 'fallback_upload', 'wait_title'], label: 'Processing Source', emoji: '⏳' },
     {
         keys: ['generate_artifacts',
             'wait_artifacts'], label: 'Generate Artifacts', emoji: '🎧'

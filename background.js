@@ -79,6 +79,7 @@ const INITIAL_STATE = {
     createdNewNotebook: false, // true when this run created the notebook (safe to delete on failure)
     uploadFallbackTried: false, // guards the one-shot download+upload retry after URL ingestion errors
     niceSourceTitle: null,   // preferred source title (from PDF metadata) applied after ingestion
+    titleUpgradePending: false, // rename the source with NotebookLM's auto title once it's generated
     importOnly: false,       // snapshot of the import-only setting for this run
     authuser: '',
     settingsSnapshot: null,
@@ -320,6 +321,30 @@ function buildNiceFilename(rawTitle, pdfUrl, fallbackName) {
     if (title) return `${title}.pdf`;
     if (tag) return `${tag}.pdf`;
     return ensurePdfFilename(fallbackName || 'uploaded.pdf');
+}
+
+function composeSourceName(title, pdfUrl) {
+    const tag = shortSourceTag(pdfUrl);
+    return `${sanitizeTitle(title)}${tag ? ` [${tag}]` : ''}.pdf`;
+}
+
+/**
+ * Rename the source to NotebookLM's auto-generated notebook title (its
+ * content-derived document title). Returns true when the rename happened.
+ */
+async function upgradeSourceTitle(state) {
+    try {
+        const nbTitle = await getNotebookTitle(state.notebookId);
+        if (!isInformativeTitle(nbTitle)) return false;
+        const newName = composeSourceName(nbTitle, state.pdfUrl);
+        await renameSource(state.notebookId, state.sourceId, newName);
+        await setState({ notebookTitle: nbTitle, titleUpgradePending: false });
+        console.log(`[Pipeline] Upgraded source title to: ${newName}`);
+        return true;
+    } catch (e) {
+        console.warn('[Pipeline] Title upgrade failed:', e?.message);
+        return false;
+    }
 }
 
 /**
@@ -624,7 +649,14 @@ async function completePipeline() {
     chrome.alarms.clear(ALARM_NAME);
 
     const settings = await getSettings();
-    const state = await getState();
+    let state = await getState();
+
+    // Artifact runs take minutes, so NotebookLM's auto title exists by now:
+    // apply the deferred source-title upgrade before announcing completion.
+    if (state.titleUpgradePending && state.sourceId) {
+        await upgradeSourceTitle(state);
+        state = await getState();
+    }
     const tasks = state.tasks || [];
     const totalCount = tasks.length;
     const completedCount = tasks.filter(t => t.status === 'completed').length;
@@ -870,23 +902,14 @@ async function tickSourcePoll(state) {
     }
 
     // Source is READY. If its title is still uninformative (URL sources keep
-    // the raw URL; uploads may carry a tag-only name), rename it using the
-    // best content-derived title available: for notebooks created this run,
-    // NotebookLM's own auto-generated notebook title IS the document title.
+    // the raw URL; uploads may carry a tag-only name), give it the best name
+    // we have now, and schedule an upgrade to NotebookLM's content-derived
+    // title — the auto-generated notebook title IS the document title, but it
+    // appears some seconds after ingestion, so it is applied later.
+    let titleUpgradePending = false;
     if (!isInformativeTitle(source.title)) {
-        let bestTitle = null;
-        if (state.createdNewNotebook) {
-            try {
-                const nbTitle = await getNotebookTitle(state.notebookId);
-                if (isInformativeTitle(nbTitle)) bestTitle = nbTitle;
-            } catch (_) { /* cosmetic only */ }
-        }
-        if (!bestTitle && isInformativeTitle(state.niceSourceTitle)) {
-            bestTitle = state.niceSourceTitle;
-        }
-        if (bestTitle) {
-            const tag = shortSourceTag(state.pdfUrl);
-            const newName = `${sanitizeTitle(bestTitle)}${tag ? ` [${tag}]` : ''}.pdf`;
+        if (isInformativeTitle(state.niceSourceTitle)) {
+            const newName = composeSourceName(state.niceSourceTitle, state.pdfUrl);
             try {
                 await renameSource(state.notebookId, state.sourceId, newName);
                 console.log(`[Tick] Renamed source to: ${newName}`);
@@ -894,10 +917,23 @@ async function tickSourcePoll(state) {
                 console.warn('[Tick] Could not rename source:', renameErr?.message);
             }
         }
+        if (state.createdNewNotebook && !isWebpageSourceType(state.sourceType)) {
+            titleUpgradePending = true;
+            await setState({ titleUpgradePending: true });
+        }
     }
 
-    // In import-only mode we're done; otherwise trigger artifacts.
+    // In import-only mode: wait for the auto title (if pending), then done.
     if (state.importOnly) {
+        if (titleUpgradePending) {
+            console.log('[Tick] Source ready, waiting for NotebookLM title before completing');
+            await setState({
+                step: 'wait_title',
+                stepStartedAt: new Date().toISOString(),
+                stepDetail: 'Source imported. Waiting for NotebookLM to derive the document title...',
+            });
+            return;
+        }
         console.log('[Tick] Source ready, import-only mode -- completing');
         await completeImportOnly(state);
         return;
@@ -1060,6 +1096,32 @@ async function tickSourcePoll(state) {
 }
 
 /**
+ * One tick of the wait_title phase (import-only, newly created notebooks):
+ * wait briefly for NotebookLM's auto-generated title, rename the source with
+ * it, then complete. Completes without the upgrade after 90 seconds.
+ */
+async function tickTitleWait(state) {
+    const TITLE_TIMEOUT_MS = 90000;
+    const elapsed = Date.now() - new Date(state.stepStartedAt).getTime();
+
+    if (await upgradeSourceTitle(state)) {
+        await completeImportOnly(await getState());
+        return;
+    }
+
+    if (elapsed > TITLE_TIMEOUT_MS) {
+        console.log('[Tick] Gave up waiting for auto title; completing');
+        await setState({ titleUpgradePending: false });
+        await completeImportOnly(state);
+        return;
+    }
+
+    await setState({
+        stepDetail: `Source imported. Waiting for NotebookLM to derive the document title (${Math.round(elapsed / 1000)}s)...`,
+    });
+}
+
+/**
  * One tick of the artifact-polling phase.
  * Polls all artifact tasks. Calls completePipeline() when all have settled.
  */
@@ -1131,6 +1193,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     if (state.step === 'wait_source') {
         await tickSourcePoll(state);
+    } else if (state.step === 'wait_title') {
+        await tickTitleWait(state);
     } else if (state.step === 'fallback_upload') {
         if (Date.now() - new Date(state.stepStartedAt).getTime() > 240000) {
             await failPipeline(
@@ -1174,12 +1238,18 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
 
         // Capture the preferred source title (bare title, no tag/extension)
         // now, while the PDF tab is open: URL sources keep the raw URL as
-        // their NotebookLM title, so we rename them after ingestion.
+        // their NotebookLM title, so we rename them after ingestion. Fall back
+        // to a cleaned-up URL filename (e.g. "hawk key recovery").
         let niceSourceTitle = null;
         if (!uploadFile && !isWebpageSourceType(effectiveSourceType) && /^https?:\/\//i.test(pdfUrl || '')) {
             try {
                 const tabTitle = await titleFromOpenTab(pdfUrl);
-                niceSourceTitle = isInformativeTitle(tabTitle) ? sanitizeTitle(tabTitle) : null;
+                if (isInformativeTitle(tabTitle)) {
+                    niceSourceTitle = sanitizeTitle(tabTitle);
+                } else {
+                    const fromFilename = sanitizeTitle(filenameFromUrl(pdfUrl) || '');
+                    if (isInformativeTitle(fromFilename)) niceSourceTitle = fromFilename;
+                }
             } catch (_) { /* cosmetic only */ }
         }
 
