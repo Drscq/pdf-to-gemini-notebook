@@ -22,11 +22,15 @@
 
 import {
     fetchTokens,
+    setAuthuser,
+    buildNotebookUrl,
+    probeAccounts,
     createNotebook,
     deleteNotebook,
     addUrlSource,
     addFileSource,
     listSources,
+    listNotebooks,
     getNotebookTitle,
     generateAudio,
     generateVideo,
@@ -70,6 +74,11 @@ const INITIAL_STATE = {
     notebookUrl: null,
     notebookTitle: null,     // auto-generated title fetched after source ingestion
     sourceId: null,
+    createdNewNotebook: false, // true when this run created the notebook (safe to delete on failure)
+    uploadFallbackTried: false, // guards the one-shot download+upload retry after URL ingestion errors
+    importOnly: false,       // snapshot of the import-only setting for this run
+    authuser: '',
+    settingsSnapshot: null,
     tasks: [],               // [{ type, taskId, status }] for each artifact being generated
     error: null,
     startedAt: null,
@@ -315,6 +324,10 @@ const DEFAULT_SETTINGS = {
     // Data table
     generateDataTable: false,
     dataTablePrompt: '',
+    // Import behavior
+    targetNotebookId: '',      // '' = create a new notebook; otherwise an existing notebook ID
+    importOnly: false,         // true = add the source and stop (no artifact generation)
+    accountAuthuser: '',       // '' = default Google session; otherwise an authuser index
     // UX
     notificationEnabled: true,
     chimeEnabled: true,
@@ -459,6 +472,51 @@ async function completePipeline() {
     console.log('[Pipeline] Completed successfully');
 }
 
+async function completeImportOnly(state) {
+    chrome.alarms.clear(ALARM_NAME);
+    const settings = await getSettings();
+
+    let notebookTitle = state.notebookTitle;
+    try {
+        notebookTitle = (await getNotebookTitle(state.notebookId)) || notebookTitle;
+    } catch (_) { /* title is cosmetic */ }
+
+    setBadge('✓', '#0fad6e');  // green check
+    await setState({
+        status: 'completed',
+        step: 'done',
+        notebookTitle,
+        stepDetail: 'Source imported to notebook. No artifacts were requested.',
+        completedAt: new Date().toISOString(),
+    });
+
+    if (settings.chimeEnabled) {
+        playCompletionChime();
+    }
+
+    if (settings.notificationEnabled !== false) {
+        const nbTitle = notebookTitle ? `"${notebookTitle}" ` : '';
+        chrome.notifications.create('pipeline-complete', {
+            type: 'basic',
+            iconUrl: 'icons/icon128.png',
+            title: '📓 Source Imported!',
+            message: `Source added to notebook ${nbTitle}. Click to open.`,
+            priority: 2,
+            requireInteraction: true,
+            buttons: [
+                { title: '📓 Open Notebook' },
+                { title: 'Dismiss' },
+            ],
+        });
+    }
+
+    if (settings.autoOpenNotebook && state.notebookUrl) {
+        chrome.tabs.create({ url: state.notebookUrl });
+    }
+
+    console.log('[Pipeline] Import-only run completed');
+}
+
 async function failPipeline(errorMsg, notebookId = null, sourceWasReady = false) {
     chrome.alarms.clear(ALARM_NAME);
     setBadge('!', '#e03e3e');  // red exclamation
@@ -514,8 +572,8 @@ async function tickSourcePoll(state) {
     if (elapsed > SOURCE_TIMEOUT_MS) {
         await failPipeline(
             `${sourceLabel} ingestion timed out after 10 minutes.`,
-            state.notebookId,
-            false   // source never became ready, delete the blank notebook
+            state.createdNewNotebook ? state.notebookId : null,
+            false   // source never became ready; delete the notebook only if we created it
         );
         return;
     }
@@ -539,7 +597,52 @@ async function tickSourcePoll(state) {
     }
 
     if (source.status === SourceStatus.ERROR) {
-        await failPipeline(`${sourceLabel} processing failed.`, state.notebookId, false);
+        // Some sites (e.g. eprint.iacr.org) block NotebookLM's server-side URL
+        // fetcher, so the URL source ends up in ERROR even though the browser
+        // itself can download the PDF fine. Retry once by downloading the PDF
+        // here and uploading it as a file source.
+        const canRetryAsUpload = !isWebpageSourceType(state.sourceType) &&
+            typeof state.pdfUrl === 'string' && /^https?:\/\//i.test(state.pdfUrl) &&
+            !state.uploadFallbackTried;
+
+        if (canRetryAsUpload) {
+            await setState({
+                uploadFallbackTried: true,
+                step: 'fallback_upload',
+                stepStartedAt: new Date().toISOString(),
+                stepDetail: 'NotebookLM could not fetch the URL (site blocked it). Downloading the PDF and uploading directly...',
+            });
+            try {
+                const fallbackFile = await downloadRemotePdfForUpload(state.pdfUrl, state.pageUrl);
+                const retrySource = await addFileSource(
+                    state.notebookId,
+                    fallbackFile.filename,
+                    fallbackFile.fileData,
+                    fallbackFile.mimeType
+                );
+                if (!retrySource.id) throw new Error('fallback upload returned no source ID');
+                await setState({
+                    sourceId: retrySource.id,
+                    step: 'wait_source',
+                    stepStartedAt: new Date().toISOString(),
+                    stepDetail: `Fallback upload started (${fallbackFile.filename}). Waiting for ingestion...`,
+                });
+                return;
+            } catch (fallbackErr) {
+                await failPipeline(
+                    `${sourceLabel} URL import failed and the direct upload fallback also failed: ${fallbackErr.message}`,
+                    state.createdNewNotebook ? state.notebookId : null,
+                    false
+                );
+                return;
+            }
+        }
+
+        await failPipeline(
+            `${sourceLabel} processing failed.`,
+            state.createdNewNotebook ? state.notebookId : null,
+            false
+        );
         return;
     }
 
@@ -548,7 +651,13 @@ async function tickSourcePoll(state) {
         return;
     }
 
-    // Source is READY -- fetch notebook title, then trigger artifact generation
+    // Source is READY. In import-only mode we're done; otherwise trigger artifacts.
+    if (state.importOnly) {
+        console.log('[Tick] Source ready, import-only mode -- completing');
+        await completeImportOnly(state);
+        return;
+    }
+
     console.log('[Tick] Source ready, triggering artifact generation');
     await setState({ step: 'generate_artifacts', stepDetail: 'Source ready! Starting generation...' });
 
@@ -564,7 +673,7 @@ async function tickSourcePoll(state) {
     }
 
     try {
-        const settings = await getSettings();
+        const settings = state.settingsSnapshot || await getSettings();
         const sourceIds = [state.sourceId];
         const tasks = [];
 
@@ -771,10 +880,23 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         return;
     }
 
+    setAuthuser(state.authuser);
+
     console.log(`[Alarm] tick -- step=${state.step}`);
 
     if (state.step === 'wait_source') {
         await tickSourcePoll(state);
+    } else if (state.step === 'fallback_upload') {
+        if (Date.now() - new Date(state.stepStartedAt).getTime() > 240000) {
+            await failPipeline(
+                'Fallback upload timed out.',
+                state.createdNewNotebook ? state.notebookId : null,
+                false
+            );
+        } else {
+            console.log('[Alarm] Fallback upload still in progress; waiting for the original tick');
+            return;
+        }
     } else if (state.step === 'wait_artifacts') {
         await tickArtifactPoll(state);
     } else if (state.step === 'generate_artifacts') {
@@ -798,9 +920,12 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
     console.log(`[Pipeline] Starting for ${sourceLabel}: ${pdfUrl}`);
 
     let notebookId = null;
+    let createdNewNotebook = false;
 
     try {
         setBadge('...', '#6b7a8d');  // grey ellipsis while running
+        const settings = await getSettings();
+        setAuthuser(settings.accountAuthuser);
 
         // Step 1: Authenticate
         await setState({
@@ -814,6 +939,11 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
             notebookUrl: null,
             notebookTitle: null,
             sourceId: null,
+            createdNewNotebook: false,
+            uploadFallbackTried: false,
+            importOnly: !!settings.importOnly,
+            authuser: settings.accountAuthuser ?? '',
+            settingsSnapshot: settings,
             tasks: [],
             error: null,
             startedAt: new Date().toISOString(),
@@ -822,21 +952,33 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
         });
 
         await fetchTokens();
-        await setState({ step: 'create_notebook', stepDetail: 'Creating notebook...' });
 
-        // Step 2: Create notebook
-        const notebook = await createNotebook('');
-        if (!notebook.id) throw new Error('Failed to create notebook -- no ID returned');
-        notebookId = notebook.id;
+        // Step 2: Create a new notebook, or reuse the one the user selected
+        if (settings.targetNotebookId) {
+            notebookId = settings.targetNotebookId;
+            await setState({ step: 'create_notebook', stepDetail: 'Using selected notebook...' });
+            try {
+                await listSources(notebookId);
+            } catch {
+                throw new Error('Selected notebook could not be opened (deleted, or belongs to a different Google account). Open the extension popup and pick another notebook.');
+            }
+        } else {
+            await setState({ step: 'create_notebook', stepDetail: 'Creating notebook...' });
+            const notebook = await createNotebook('');
+            if (!notebook.id) throw new Error('Failed to create notebook -- no ID returned');
+            notebookId = notebook.id;
+            createdNewNotebook = true;
+        }
 
-        const notebookUrl = `https://notebooklm.google.com/notebook/${notebook.id}`;
+        const notebookUrl = buildNotebookUrl(notebookId);
         const sourceStepDetail = uploadFile
             ? `Uploading local PDF: ${uploadFile.filename}`
             : `Adding ${sourceLabel}: ${pdfUrl.substring(0, 60)}...`;
 
         await setState({
-            notebookId: notebook.id,
+            notebookId,
             notebookUrl,
+            createdNewNotebook,
             step: 'add_source',
             stepDetail: sourceStepDetail,
         });
@@ -845,7 +987,7 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
         let source = null;
         if (uploadFile) {
             source = await addFileSource(
-                notebook.id,
+                notebookId,
                 uploadFile.filename,
                 uploadFile.fileData,
                 uploadFile.mimeType || 'application/pdf'
@@ -856,7 +998,7 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
             }
             const canFallbackToPdfUpload = !isWebpageSourceType(effectiveSourceType) && isLikelyPdfUrl(pdfUrl);
             try {
-                source = await addUrlSource(notebook.id, pdfUrl);
+                source = await addUrlSource(notebookId, pdfUrl);
             } catch (urlErr) {
                 if (!canFallbackToPdfUpload) {
                     throw urlErr;
@@ -869,11 +1011,12 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
                 try {
                     const fallbackFile = await downloadRemotePdfForUpload(pdfUrl, pageUrl);
                     source = await addFileSource(
-                        notebook.id,
+                        notebookId,
                         fallbackFile.filename,
                         fallbackFile.fileData,
                         fallbackFile.mimeType
                     );
+                    await setState({ uploadFallbackTried: true });
                     await setState({
                         stepDetail: `URL blocked. Fallback upload succeeded (${fallbackFile.filename}).`
                     });
@@ -906,7 +1049,7 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
     } catch (err) {
         const msg = err?.message || 'Unknown error';
         console.error('[Pipeline] Setup error:', err);
-        await failPipeline(msg, notebookId, false);
+        await failPipeline(msg, createdNewNotebook ? notebookId : null, false);
     }
 }
 
@@ -970,6 +1113,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         chrome.storage.local.set({ detectedPdf: message.data });
         sendResponse({ ok: true });
         return false;
+    }
+
+    if (message.type === 'LIST_NOTEBOOKS') {
+        (async () => {
+            try {
+                const settings = await getSettings();
+                setAuthuser(settings.accountAuthuser);
+                await fetchTokens();
+                const notebooks = await listNotebooks();
+                sendResponse({ ok: true, notebooks });
+            } catch (err) {
+                sendResponse({ ok: false, error: err?.message || 'Could not list notebooks' });
+            }
+        })();
+        return true;
+    }
+
+    if (message.type === 'LIST_ACCOUNTS') {
+        (async () => {
+            try {
+                const accounts = await probeAccounts();
+                sendResponse({ ok: true, accounts });
+            } catch (err) {
+                sendResponse({ ok: false, error: err?.message || 'Could not probe accounts' });
+            }
+        })();
+        return true;
     }
 });
 

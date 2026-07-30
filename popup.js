@@ -35,6 +35,7 @@ const DEFAULTS = {
     generateSlideDeck: false, slideDeckFormat: 'detailed_deck', slideDeckLength: 'default', slideDeckPrompt: '',
     generateMindMap: false,
     generateDataTable: false, dataTablePrompt: '',
+    targetNotebookId: '', targetNotebookLabel: '', importOnly: false, accountAuthuser: '',
     notificationEnabled: true,
     chimeEnabled: true, autoOpenNotebook: false,
 };
@@ -43,6 +44,7 @@ const SELECT_MAP = {
     's-audioFormat': 'audioFormat',
     's-language': 'language',
     's-videoStyle': 'videoStyle',
+    's-account': 'accountAuthuser',
 };
 const RADIO_NAMES = [
     'audioLength', 'videoFormat', 'reportFormat',
@@ -87,13 +89,35 @@ const TEXTAREA_MAP = {
 // Settings load / save
 // =========================================================================
 
+let settingsWriteQueue = Promise.resolve();
+
+function queueSettingsWrite(partial) {
+    settingsWriteQueue = settingsWriteQueue.then(async () => {
+        const current = ((await chrome.storage.local.get('userSettings')).userSettings) || {};
+        await chrome.storage.local.set({ userSettings: { ...current, ...partial } });
+    }, async () => {
+        const current = ((await chrome.storage.local.get('userSettings')).userSettings) || {};
+        await chrome.storage.local.set({ userSettings: { ...current, ...partial } });
+    });
+    return settingsWriteQueue;
+}
+
 async function loadSettings() {
     const result = await chrome.storage.local.get('userSettings');
     const s = { ...DEFAULTS, ...(result.userSettings || {}) };
 
     for (const [id, key] of Object.entries(SELECT_MAP)) {
         const el = document.getElementById(id);
-        if (el) el.value = s[key] ?? DEFAULTS[key];
+        if (el) {
+            el.value = s[key] ?? DEFAULTS[key];
+            if (el.id === 's-account' && el.selectedIndex === -1 && s[key] !== '') {
+                const opt = document.createElement('option');
+                opt.value = s[key];
+                opt.textContent = `Account ${s[key]}`;
+                el.appendChild(opt);
+                el.value = s[key];
+            }
+        }
     }
     for (const name of RADIO_NAMES) {
         const val = s[name] ?? DEFAULTS[name];
@@ -132,8 +156,7 @@ async function saveSettings() {
         if (el) s[key] = el.value.trim();
     }
 
-    const current = ((await chrome.storage.local.get('userSettings')).userSettings) || {};
-    await chrome.storage.local.set({ userSettings: { ...current, ...s } });
+    return queueSettingsWrite(s);
 }
 
 // Returns true if at least one artifact toggle is checked
@@ -156,6 +179,101 @@ function updateReportPromptHint() {
     const formatEl = document.querySelector('input[name="reportFormat"]:checked');
     const hint = document.getElementById('report-prompt-required');
     if (hint) hint.style.display = (formatEl && formatEl.value === 'custom') ? 'inline' : 'none';
+}
+
+// =========================================================================
+// Import options (target notebook + import-only) on the main screen
+// =========================================================================
+
+function importOptionsHtml() {
+    return `
+    <div class="import-opts">
+      <div class="import-row">
+        <span class="import-label">Import to</span>
+        <select id="nb-target" class="s-select"><option value="">➕ New notebook</option></select>
+      </div>
+      <div class="import-row">
+        <label class="import-checkbox-label">
+          <input type="checkbox" id="cb-importOnly"> Import source only (skip artifact generation)
+        </label>
+      </div>
+    </div>`;
+}
+
+async function getStoredSettings() {
+    const result = await chrome.storage.local.get('userSettings');
+    return { ...DEFAULTS, ...(result.userSettings || {}) };
+}
+
+async function saveImportSettings(partial) {
+    return queueSettingsWrite(partial);
+}
+
+async function wireImportOptions() {
+    const sel = document.getElementById('nb-target');
+    const cb = document.getElementById('cb-importOnly');
+    if (!sel || !cb) return;
+    const settings = await getStoredSettings();
+
+    cb.checked = !!settings.importOnly;
+    cb.addEventListener('change', () => saveImportSettings({ importOnly: cb.checked }));
+
+    // Show the previously chosen notebook immediately, before the live list loads.
+    if (settings.targetNotebookId) {
+        const opt = document.createElement('option');
+        opt.value = settings.targetNotebookId;
+        opt.textContent = settings.targetNotebookLabel || 'Previously selected notebook';
+        sel.appendChild(opt);
+        sel.value = settings.targetNotebookId;
+    }
+    sel.addEventListener('change', () => {
+        const label = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].textContent : '';
+        saveImportSettings({
+            targetNotebookId: sel.value,
+            targetNotebookLabel: sel.value ? label : '',
+        });
+    });
+
+    try {
+        const resp = await chrome.runtime.sendMessage({ type: 'LIST_NOTEBOOKS' });
+        if (resp?.ok && Array.isArray(resp.notebooks)) {
+            const prev = sel.value;
+            if (resp.notebooks.length > 0) {
+                sel.innerHTML = '<option value="">➕ New notebook</option>' + resp.notebooks.map(nb =>
+                    `<option value="${escapeHtml(nb.id)}">${escapeHtml((nb.emoji ? nb.emoji + ' ' : '') + nb.title)}</option>`
+                ).join('');
+                sel.value = prev;
+                if (sel.selectedIndex === -1) {
+                    sel.value = '';
+                    saveImportSettings({ targetNotebookId: '', targetNotebookLabel: '' });
+                }
+            }
+        }
+    } catch (_) { /* keep provisional options; list will load next time */ }
+}
+
+async function populateAccountSelect() {
+    const sel = document.getElementById('s-account');
+    if (!sel) return;
+    const settings = await getStoredSettings();
+    let accounts = [];
+    try {
+        const resp = await chrome.runtime.sendMessage({ type: 'LIST_ACCOUNTS' });
+        if (resp?.ok && Array.isArray(resp.accounts)) accounts = resp.accounts;
+    } catch (_) { /* show the stored account as unavailable below */ }
+
+    sel.innerHTML = '<option value="">Auto (default session)</option>' + accounts.map(a =>
+        `<option value="${escapeHtml(String(a.authuser))}">${escapeHtml(a.email)}</option>`
+    ).join('');
+
+    const stored = String(settings.accountAuthuser ?? '');
+    if (stored !== '' && !Array.from(sel.options).some(opt => opt.value === stored)) {
+        const opt = document.createElement('option');
+        opt.value = stored;
+        opt.textContent = `Account ${stored} (session unavailable)`;
+        sel.appendChild(opt);
+    }
+    sel.value = stored;
 }
 
 // =========================================================================
@@ -200,6 +318,7 @@ document.getElementById('btn-gear').addEventListener('click', async () => {
             listenersWired = true;
         }
         await loadSettings();
+        populateAccountSelect();
     }
 });
 
@@ -339,10 +458,12 @@ function renderDetection(data) {
       <div class="pdf-url">${escapeHtml(truncated)}</div>
       <div class="pdf-source">via ${escapeHtml(sourceLabel)}</div>
     </div>
+    ${importOptionsHtml()}
     <button class="btn-generate" id="btn-upload-start">Use Current PDF and Generate</button>
     <button class="btn-secondary" id="btn-upload-other">Choose Different PDF</button>`;
         document.getElementById('btn-upload-start').addEventListener('click', () => startPipelineFromCurrentTabPdf(data.pageUrl || data.pdfUrl));
         document.getElementById('btn-upload-other').addEventListener('click', () => promptForPdfUpload(data.pageUrl || data.pdfUrl));
+        wireImportOptions();
         return;
     }
 
@@ -352,8 +473,10 @@ function renderDetection(data) {
       <div class="pdf-url">${escapeHtml(truncated)}</div>
       <div class="pdf-source">via ${escapeHtml(sourceLabel)}</div>
     </div>
-    <button class="btn-generate" id="btn-start">🎧 Generate Artifacts</button>`;
+    ${importOptionsHtml()}
+    <button class="btn-generate" id="btn-start">🎧 Import & Generate</button>`;
     document.getElementById('btn-start').addEventListener('click', () => startPipeline(data.pdfUrl, data.pageUrl));
+    wireImportOptions();
 }
 
 function renderNoPdf() {
@@ -363,10 +486,12 @@ function renderNoPdf() {
       No PDF detected on this page.<br>
       <span style="font-size:11px; color:var(--text-dim)">You can still try importing this page URL directly.</span>
     </div>
+    ${importOptionsHtml()}
     <button class="btn-generate" id="btn-start-url">Use Current Webpage URL</button>
     <button class="btn-secondary" id="btn-upload-manual">Upload Local PDF</button>`;
     document.getElementById('btn-start-url').addEventListener('click', startPipelineFromCurrentPageUrl);
     document.getElementById('btn-upload-manual').addEventListener('click', () => promptForPdfUpload(null));
+    wireImportOptions();
 }
 
 function renderProgress(state) {

@@ -606,6 +606,51 @@
       border-top: 1px solid var(--border);
       margin: 8px 0;
     }
+
+    /* Import options on the main screen */
+    .import-opts {
+      margin: 10px 0 12px;
+      padding: 10px;
+      background: var(--bg-card, rgba(255, 255, 255, 0.04));
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .import-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .import-row+.import-row {
+      margin-top: 8px;
+    }
+
+    .import-label {
+      font-size: 12px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    .import-row select {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .import-checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .s-hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
   </style>
 </head>
 
@@ -631,6 +676,25 @@
     <div id="artifact-warning">⚠️ At least one artifact must be enabled.</div>
 
     <div class="settings-inner">
+
+      <!-- ================== GOOGLE ACCOUNT ================== -->
+      <div class="s-section expanded" id="sec-account">
+        <div class="s-section-header" data-section="sec-account">
+          <span class="s-section-title">👤 Google Account</span>
+          <span class="s-section-arrow">▾</span>
+        </div>
+        <div class="s-section-content">
+          <div class="s-field">
+            <span class="s-label">Use account</span>
+            <select id="s-account" class="s-select">
+              <option value="">Auto (default session)</option>
+            </select>
+          </div>
+          <div class="s-hint">If you are signed in to multiple Google accounts, pick the one whose
+            NotebookLM you want to import into. Accounts whose session is expired (e.g. behind a
+            university SSO) will not appear here until you sign in again.</div>
+        </div>
+      </div>
 
       <!-- ================== AUDIO ================== -->
       <!-- expanded by default -->

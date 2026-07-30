@@ -12,6 +12,9 @@ Turn a PDF, arXiv page, or webpage into a NotebookLM notebook and generate artif
 ## Key Features
 
 - **Smart PDF detection** — direct PDF URLs, arXiv abstract/HTML/PDF pages, and PDF links on regular pages
+- **Import into any notebook** — pick an existing notebook from the "Import to" dropdown, or create a new one
+- **Import-only mode** — add the source without generating any artifacts
+- **Multi-account support** — choose which signed-in Google account to use (gear icon → Google Account)
 - **One-click pipeline** — creates a notebook, adds the source, and starts artifact generation in a single flow
 - **Background progress** — the pipeline keeps running even after you close the popup; a desktop notification and chime fire on completion (both on by default, toggleable in settings)
 - **Local PDF upload** — reads the PDF in the current tab directly, or falls back to a file picker

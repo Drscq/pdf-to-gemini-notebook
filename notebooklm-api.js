@@ -5,14 +5,22 @@
  * Uses fetch() with credentials from browser cookies.
  */
 
-const BATCHEXECUTE_URL = 'https://notebooklm.google.com/_/LabsTailwindUi/data/batchexecute';
-const HOMEPAGE_URL = 'https://notebooklm.google.com/';
-const UPLOAD_URL = 'https://notebooklm.google.com/upload/_/';
+// NotebookLM was rebranded/migrated to notebook.google.com ("Gemini Notebook")
+// in mid-2026; the legacy domain redirects there. Probe the new domain first
+// and fall back to the legacy one, then remember whichever origin actually
+// served the app so every RPC/upload call targets the right host.
+const CANDIDATE_ORIGINS = [
+  'https://notebook.google.com',
+  'https://notebooklm.google.com',
+];
+const BATCHEXECUTE_PATH = '/_/LabsTailwindUi/data/batchexecute';
+const UPLOAD_PATH = '/upload/_/';
 
 // RPC Method IDs (reverse-engineered from notebooklm-py rpc/types.py)
 const RPCMethod = {
   CREATE_NOTEBOOK: 'CCqFvf',
   GET_NOTEBOOK: 'rLM1Ne',
+  LIST_NOTEBOOKS: 'wXbhsf',
   DELETE_NOTEBOOK: 'WWINqb',
   ADD_SOURCE: 'izAoDd',
   ADD_SOURCE_FILE: 'o4cbdc',
@@ -139,44 +147,143 @@ const SourceStatus = {
 
 let _csrfToken = null;
 let _sessionId = null;
+let _baseOrigin = null;
+let _authuser = null;   // Google session index (0, 1, ...); null = default session
 
 /**
- * Fetch CSRF token (SNlM0e) and session ID (FdrFJe) from NotebookLM homepage.
+ * Select which signed-in Google account (authuser index) to use for all
+ * subsequent API calls. Pass null/'' for the browser's default session.
+ * Clears cached tokens so the next call re-authenticates under that account.
+ */
+function setAuthuser(value) {
+  const next = (value === null || value === undefined || value === '')
+    ? null
+    : Number(value);
+  const normalized = Number.isInteger(next) && next >= 0 ? next : null;
+  if (normalized === _authuser) return;
+  _authuser = normalized;
+  _csrfToken = null;
+  _sessionId = null;
+  _baseOrigin = null;
+}
+
+function getBaseOrigin() {
+  return _baseOrigin || CANDIDATE_ORIGINS[0];
+}
+
+function withAuthuser(url) {
+  if (_authuser === null) return url;
+  const u = new URL(url);
+  u.searchParams.set('authuser', String(_authuser));
+  return u.toString();
+}
+
+function buildNotebookUrl(notebookId) {
+  return withAuthuser(`${getBaseOrigin()}/notebook/${notebookId}`);
+}
+
+/**
+ * Fetch CSRF token (SNlM0e) and session ID (FdrFJe) from the NotebookLM
+ * homepage, resolving the live app origin along the way (the legacy
+ * notebooklm.google.com domain redirects to notebook.google.com).
  * Since we're in a Chrome extension, browser cookies are sent automatically.
  */
 async function fetchTokens() {
-  const response = await fetch(HOMEPAGE_URL, {
-    credentials: 'include',
-    redirect: 'follow',
-  });
+  let sawAccountsRedirect = false;
+  let sawSsoRedirect = null;
+  let fetchFailureCount = 0;
+  const candidateHosts = new Set(CANDIDATE_ORIGINS.map(origin => new URL(origin).host));
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch NotebookLM homepage: ${response.status}`);
-  }
-
-  const html = await response.text();
-
-  // Extract CSRF token: "SNlM0e":"<token>"
-  const csrfMatch = html.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
-  if (!csrfMatch) {
-    // Check if redirected to login
-    if (response.url.includes('accounts.google.com')) {
-      throw new Error('AUTH_REQUIRED: Not logged in to Google. Please sign in to NotebookLM first.');
+  for (const origin of CANDIDATE_ORIGINS) {
+    let response;
+    try {
+      response = await fetch(withAuthuser(`${origin}/`), {
+        credentials: 'include',
+        redirect: 'follow',
+      });
+    } catch (_) {
+      fetchFailureCount++;
+      continue; // network/DNS failure on this candidate; try the next
     }
-    throw new Error('CSRF token (SNlM0e) not found in NotebookLM page. Auth may be expired.');
+
+    const finalHost = (() => { try { return new URL(response.url).host; } catch (_) { return ''; } })();
+    if (!candidateHosts.has(finalHost)) {
+      if (finalHost.includes('accounts.google.com')) {
+        sawAccountsRedirect = true;
+      } else if (!finalHost.endsWith('.google.com')) {
+        // Redirected to an org SSO portal (e.g. a university login page):
+        // this Google account exists but its session needs re-authentication.
+        sawSsoRedirect = finalHost;
+      }
+      continue;
+    }
+
+    if (!response.ok) continue;
+    const html = await response.text();
+
+    const csrfMatch = html.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+    const sessionMatch = html.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+    if (csrfMatch && sessionMatch) {
+      _csrfToken = csrfMatch[1];
+      _sessionId = sessionMatch[1];
+      _baseOrigin = new URL(response.url).origin;
+      console.log(`[NotebookLM API] Tokens fetched (origin: ${_baseOrigin}, authuser: ${_authuser ?? 'default'})`);
+      return { csrfToken: _csrfToken, sessionId: _sessionId, baseOrigin: _baseOrigin };
+    }
   }
 
-  // Extract session ID: "FdrFJe":"<session_id>"
-  const sessionMatch = html.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
-  if (!sessionMatch) {
-    throw new Error('Session ID (FdrFJe) not found in NotebookLM page.');
+  if (fetchFailureCount === CANDIDATE_ORIGINS.length) {
+    throw new Error('NETWORK: Could not reach NotebookLM. Check your internet connection and try again.');
   }
+  if (sawSsoRedirect) {
+    throw new Error(
+      `AUTH_REQUIRED: The selected Google account requires sign-in via ${sawSsoRedirect}. ` +
+      'Open NotebookLM in a tab and sign in, or pick a different account in the extension settings (gear icon).'
+    );
+  }
+  if (sawAccountsRedirect) {
+    throw new Error('AUTH_REQUIRED: Not logged in to Google. Please sign in to NotebookLM first.');
+  }
+  throw new Error('CSRF token (SNlM0e) not found in NotebookLM page. Auth may be expired — open NotebookLM in a tab, or pick a different account in the extension settings.');
+}
 
-  _csrfToken = csrfMatch[1];
-  _sessionId = sessionMatch[1];
+/**
+ * Probe which signed-in Google accounts have a working NotebookLM session.
+ * Returns [{ authuser, email, ok }] with one entry per distinct account.
+ */
+async function probeAccounts(maxIndex = 3) {
+  const accounts = [];
+  const seenEmails = new Set();
+  const candidateHosts = new Set(CANDIDATE_ORIGINS.map(origin => new URL(origin).host));
 
-  console.log('[NotebookLM API] Tokens fetched successfully');
-  return { csrfToken: _csrfToken, sessionId: _sessionId };
+  for (let n = 0; n <= maxIndex; n++) {
+    for (const origin of CANDIDATE_ORIGINS) {
+      let response;
+      try {
+        const u = new URL(`${origin}/`);
+        u.searchParams.set('authuser', String(n));
+        response = await fetch(u.toString(), { credentials: 'include', redirect: 'follow' });
+      } catch (_) {
+        continue;
+      }
+      const finalHost = (() => { try { return new URL(response.url).host; } catch (_) { return ''; } })();
+      if (!candidateHosts.has(finalHost)) continue;
+      if (!response.ok) continue;
+      const html = await response.text();
+      const csrfMatch = html.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+      const sessionMatch = html.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+      if (!csrfMatch || !sessionMatch) continue;
+
+      const emailMatch = html.match(/"([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})"/);
+      const email = emailMatch ? emailMatch[1] : `account ${n}`;
+      if (!seenEmails.has(email)) {
+        seenEmails.add(email);
+        accounts.push({ authuser: n, email, ok: true });
+      }
+      break; // this index resolved; no need to try the other origin
+    }
+  }
+  return accounts;
 }
 
 async function ensureTokens() {
@@ -400,7 +507,7 @@ async function rpcCall(methodId, params, sourcePath = '/', allowNull = false) {
   const rpcRequest = encodeRpcRequest(methodId, params);
   const body = buildRequestBody(rpcRequest, csrfToken);
   const urlParams = buildUrlParams(methodId, sourcePath, sessionId);
-  const url = `${BATCHEXECUTE_URL}?${urlParams.toString()}`;
+  const url = withAuthuser(`${getBaseOrigin()}${BATCHEXECUTE_PATH}?${urlParams.toString()}`);
 
   const response = await fetch(url, {
     method: 'POST',
@@ -521,13 +628,13 @@ async function registerFileSource(notebookId, filename) {
 }
 
 async function startResumableUpload(notebookId, filename, fileSize, sourceId) {
-  const response = await fetch(`${UPLOAD_URL}?authuser=0`, {
+  const response = await fetch(`${getBaseOrigin()}${UPLOAD_PATH}?authuser=${_authuser ?? 0}`, {
     method: 'POST',
     credentials: 'include',
     headers: {
       'Accept': '*/*',
       'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      'x-goog-authuser': '0',
+      'x-goog-authuser': String(_authuser ?? 0),
       'x-goog-upload-command': 'start',
       'x-goog-upload-header-content-length': String(fileSize),
       'x-goog-upload-protocol': 'resumable',
@@ -558,7 +665,7 @@ async function uploadFileBytes(uploadUrl, binaryPayload, mimeType = 'application
     headers: {
       'Accept': '*/*',
       'Content-Type': mimeType || 'application/pdf',
-      'x-goog-authuser': '0',
+      'x-goog-authuser': String(_authuser ?? 0),
       'x-goog-upload-command': 'upload, finalize',
       'x-goog-upload-offset': '0',
     },
@@ -605,9 +712,21 @@ async function addUrlSource(notebookId, url) {
     null,
   ];
 
+  // Snapshot existing sources first so the null-result confirmation below can
+  // tell a freshly added source apart from an older one with the same URL.
+  let preExistingIds = null;
+  try {
+    preExistingIds = new Set((await listSourcesRaw(notebookId)).map(s => String(s.id)));
+  } catch (_) {
+    preExistingIds = null;
+  }
+
+  // The current backend often returns an empty RPC payload even though the
+  // source was added, so allow a null result and confirm via listSources.
   const result = await rpcCall(
     RPCMethod.ADD_SOURCE, params,
-    `/notebook/${notebookId}`
+    `/notebook/${notebookId}`,
+    true
   );
 
   // Parse source from response (shape can drift over time)
@@ -622,14 +741,51 @@ async function addUrlSource(notebookId, url) {
     }
   }
 
+  if (!sourceId) {
+    // Confirm the add by looking for a source that references this URL,
+    // preferring sources that were not in the notebook before the add.
+    let existingMatch = null;
+    for (let attempt = 0; attempt < 6 && !sourceId; attempt++) {
+      await sleep(2500);
+      try {
+        const sources = await listSourcesRaw(notebookId);
+        const candidates = sources.filter(entry => JSON.stringify(entry.raw).includes(url));
+        const fresh = preExistingIds
+          ? candidates.filter(entry => !preExistingIds.has(String(entry.id)))
+          : candidates;
+        const match = fresh[fresh.length - 1];
+        if (match) {
+          sourceId = match.id;
+          sourceTitle = match.title;
+        } else if (candidates.length > 0) {
+          existingMatch = candidates[candidates.length - 1];
+        }
+      } catch (e) {
+        console.warn('[NotebookLM API] Could not confirm URL source yet:', e.message);
+      }
+    }
+    if (!sourceId && existingMatch) {
+      // The URL is already a source in this notebook; treat the import as idempotent.
+      sourceId = existingMatch.id;
+      sourceTitle = existingMatch.title;
+      console.log('[NotebookLM API] URL already present in notebook; reusing existing source');
+    }
+  }
+
+  if (!sourceId) {
+    throw new Error('URL source add returned no source ID and the source did not appear in the notebook.');
+  }
+
   console.log(`[NotebookLM API] Added source: ${sourceId} (${sourceTitle})`);
   return { id: sourceId, title: sourceTitle };
 }
 
 /**
  * List all sources in a notebook and return their IDs + statuses.
+ * listSourcesRaw additionally exposes the raw source entry for callers that
+ * need to match on fields we don't explicitly parse (e.g. the source URL).
  */
-async function listSources(notebookId) {
+async function listSourcesRaw(notebookId) {
   const params = [notebookId, null, [2], null, 0];
   const result = await rpcCall(
     RPCMethod.GET_NOTEBOOK, params,
@@ -652,11 +808,47 @@ async function listSources(notebookId) {
           status = src[3][1];
         }
 
-        sources.push({ id: String(srcId), title, status });
+        sources.push({ id: String(srcId), title, status, raw: src });
       }
     }
   }
   return sources;
+}
+
+async function listSources(notebookId) {
+  const sources = await listSourcesRaw(notebookId);
+  return sources.map(({ id, title, status }) => ({ id, title, status }));
+}
+
+/**
+ * List the user's notebooks (recently viewed first).
+ * Returns [{ id, title, emoji }]
+ */
+async function listNotebooks() {
+  const params = [null, 1, null, [2]];
+  const result = await rpcCall(RPCMethod.LIST_NOTEBOOKS, params, '/', true);
+
+  const notebooks = [];
+  const seen = new Set();
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  const entries = (Array.isArray(result) && Array.isArray(result[0])) ? result[0] : [];
+  for (const nb of entries) {
+    if (!Array.isArray(nb)) continue;
+    let id = (typeof nb[2] === 'string' && UUID_RE.test(nb[2])) ? nb[2] : null;
+    if (!id) {
+      // Fall back to the last UUID in the serialized entry (source UUIDs come first).
+      const uuids = JSON.stringify(nb).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi);
+      id = uuids ? uuids[uuids.length - 1] : null;
+    }
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+
+    const title = (typeof nb[0] === 'string' && nb[0].trim()) ? nb[0].trim() : 'Untitled notebook';
+    const emoji = (typeof nb[3] === 'string' && nb[3].length <= 8) ? nb[3] : '';
+    notebooks.push({ id, title, emoji });
+  }
+  return notebooks;
 }
 
 async function createNote(notebookId, title = 'New Note', content = '') {
@@ -1460,11 +1652,16 @@ async function getNotebookTitle(notebookId) {
 export {
   fetchTokens,
   ensureTokens,
+  setAuthuser,
+  getBaseOrigin,
+  buildNotebookUrl,
+  probeAccounts,
   createNotebook,
   deleteNotebook,
   addUrlSource,
   addFileSource,
   listSources,
+  listNotebooks,
   getNotebookTitle,
   waitForSourceReady,
   generateAudio,
