@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Chrome PDF to NotebookLM",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Detect PDF/web sources and generate NotebookLM artifacts from Chrome",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "cookies",
     "notifications",
     "offscreen",
     "alarms"
