@@ -1,8 +1,10 @@
-# Chrome PDF to NotebookLM
+# PDF to Gemini Notebook
 
 [English](./README.md) | **简体中文**
 
-一键把 PDF、arXiv 页面或普通网页导入 NotebookLM 笔记本，并自动生成音频概览、信息图等内容。
+一键把 Chrome 能打开的任意 PDF（直链、arXiv、eprint、本地文件）导入 Gemini Notebook（原 NotebookLM），可选生成音频概览、信息图等内容。
+
+> 原名 *Chrome PDF to NotebookLM*；因 Google 已将 NotebookLM 更名为 Gemini Notebook（notebook.google.com），插件随之更名。
 
 ## 截图
 
@@ -28,7 +30,7 @@
 2. 在 Chrome 中打开 `chrome://extensions`。
 3. 打开右上角的**开发者模式**。
 4. 点击**加载已解压的扩展程序**，选择解压后的文件夹（包含 `manifest.json` 的那一层）。
-5. 确认扩展列表中出现 **Chrome PDF to NotebookLM** 即安装成功。
+5. 确认扩展列表中出现 **PDF to Gemini Notebook** 即安装成功。
 
 > 注意：Chrome 不允许直接安装来自 Chrome Web Store 之外的 zip/crx 文件，因此“解压后加载文件夹”就是正确的安装方式。安装后请不要删除或移动该文件夹——Chrome 每次启动都会从该路径加载扩展。
 

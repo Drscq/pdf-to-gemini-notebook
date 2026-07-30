@@ -1,8 +1,10 @@
-# Chrome PDF to NotebookLM
+# PDF to Gemini Notebook
 
 **English** | [简体中文](./README.zh-CN.md)
 
-Turn a PDF, arXiv page, or webpage into a NotebookLM notebook and generate artifacts (audio overview, infographic, and more) in one click.
+Import any PDF Chrome can open — direct links, arXiv, eprint, local files — into Gemini Notebook (formerly NotebookLM) in one click, optionally generating artifacts (audio overview, infographic, and more).
+
+> Formerly named *Chrome PDF to NotebookLM*; renamed after Google rebranded NotebookLM to Gemini Notebook at notebook.google.com.
 
 ## Screenshots
 
@@ -28,7 +30,7 @@ Turn a PDF, arXiv page, or webpage into a NotebookLM notebook and generate artif
 2. Open `chrome://extensions` in Chrome.
 3. Enable **Developer mode** (top-right corner).
 4. Click **Load unpacked** and select the unzipped folder (the one containing `manifest.json`).
-5. Confirm **Chrome PDF to NotebookLM** appears in your extension list.
+5. Confirm **PDF to Gemini Notebook** appears in your extension list.
 
 > Note: Chrome does not allow installing zip/crx files directly from outside the Chrome Web Store, so unzipping and loading the folder is the intended install path. Keep the folder in place after installing — Chrome loads the extension from it on every startup.
 
