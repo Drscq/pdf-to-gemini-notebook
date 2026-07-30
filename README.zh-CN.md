@@ -26,7 +26,7 @@
 
 ### 方式 A：从 Release 安装（推荐）
 
-1. 在 [Releases 页面](https://github.com/Drscq/chrome-pdf-to-notebooklm/releases/latest)下载最新的 `chrome-pdf-to-notebooklm-vX.Y.Z.zip` 并解压。
+1. 在 [Releases 页面](https://github.com/Drscq/pdf-to-gemini-notebook/releases/latest)下载最新的 `pdf-to-gemini-notebook-vX.Y.Z.zip` 并解压。
 2. 在 Chrome 中打开 `chrome://extensions`。
 3. 打开右上角的**开发者模式**。
 4. 点击**加载已解压的扩展程序**，选择解压后的文件夹（包含 `manifest.json` 的那一层）。

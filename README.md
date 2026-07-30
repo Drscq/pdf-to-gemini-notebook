@@ -26,7 +26,7 @@ Import any PDF Chrome can open — direct links, arXiv, eprint, local files — 
 
 ### Option A: From a release (recommended)
 
-1. Download the latest `chrome-pdf-to-notebooklm-vX.Y.Z.zip` from the [Releases page](https://github.com/Drscq/chrome-pdf-to-notebooklm/releases/latest) and unzip it.
+1. Download the latest `pdf-to-gemini-notebook-vX.Y.Z.zip` from the [Releases page](https://github.com/Drscq/pdf-to-gemini-notebook/releases/latest) and unzip it.
 2. Open `chrome://extensions` in Chrome.
 3. Enable **Developer mode** (top-right corner).
 4. Click **Load unpacked** and select the unzipped folder (the one containing `manifest.json`).
