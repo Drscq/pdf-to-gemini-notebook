@@ -14,11 +14,12 @@ Import any PDF Chrome can open into Gemini Notebook (formerly NotebookLM) in one
 
 ### What it does
 
-Open a PDF (direct link, arXiv, eprint, or a local file), click the extension, pick a notebook — done. Sources are auto-named with the paper's real title. By default it only imports; artifact generation (audio overview, infographic, quiz, etc.) can be enabled in settings.
+Open a PDF (direct link, arXiv, eprint, ACM DL, or a local file), click the extension, pick a notebook — done. Sources are auto-named with the paper's real title. By default it only imports; artifact generation (audio overview, infographic, quiz, etc.) can be enabled in settings.
 
 - **Import to any notebook** — an existing one or a new one, from the dropdown
 - **Real titles** — from PDF metadata, or NotebookLM's own content analysis
-- **Blocked-site fallback** — sites that reject NotebookLM's fetcher (e.g. eprint) are downloaded in your browser and uploaded automatically
+- **Detects PDFs without a `.pdf` URL** — publisher viewers like `dl.acm.org/doi/pdf/…` and IEEE Xplore are recognised from what the tab is actually rendering
+- **Blocked-site fallback** — sites that reject NotebookLM's fetcher (eprint, ACM DL and other Cloudflare-protected publishers) are downloaded in your browser, using your existing session, and uploaded automatically
 - **Multi-account** — pick which signed-in Google account to use (gear → Google Account)
 - **Fast** — typical imports finish in ~10 seconds
 
@@ -43,11 +44,12 @@ The extension talks only to Google (your session) and the site hosting the PDF �
 
 ### 功能
 
-打开一个 PDF（直链、arXiv、eprint 或本地文件），点插件图标，选一个笔记本——完成。来源会自动命名为论文的真实标题。默认只导入；音频概览、信息图、测验等内容生成可在设置中开启。
+打开一个 PDF（直链、arXiv、eprint、ACM DL 或本地文件），点插件图标，选一个笔记本——完成。来源会自动命名为论文的真实标题。默认只导入；音频概览、信息图、测验等内容生成可在设置中开启。
 
 - **导入到任意笔记本** — 下拉框选择已有笔记本或新建
 - **真实标题** — 来自 PDF 元数据或 NotebookLM 自己的内容分析
-- **拦截站点兜底** — 拒绝 NotebookLM 抓取的网站（如 eprint）会自动改为浏览器下载后上传
+- **识别无 `.pdf` 后缀的 PDF** — `dl.acm.org/doi/pdf/…`、IEEE Xplore 等出版社链接按标签页实际渲染的内容判断
+- **拦截站点兜底** — 拒绝 NotebookLM 抓取的网站（eprint、ACM DL 等 Cloudflare 保护的出版社）会自动改为用你已登录的会话在浏览器中下载后上传
 - **多账号** — 可选择使用哪个已登录的 Google 账号（齿轮 → Google Account）
 - **快** — 一般导入约 10 秒完成
 

@@ -405,14 +405,39 @@ async function init() {
 // PDF Detection
 // =========================================================================
 
+/**
+ * Publisher URLs that serve a PDF with no `.pdf` extension, e.g.
+ * https://dl.acm.org/doi/pdf/10.1145/1374376.1374407
+ */
+const EXTENSIONLESS_PDF_PATH_RE =
+    /\/(?:doi\/(?:e?pdf|pdfdirect)\/|pdf\/|pdfdirect\/|stamp\/stamp\.jsp|content\/pdf\/|articles?\/pdf\/|download\/pdf)/i;
+
 async function detectAndRender() {
+    let activeTab = null;
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        activeTab = tab || null;
         if (tab?.url) {
             const url = tab.url;
             if (/\.pdf(\?.*)?$/i.test(url)) {
                 const source = /^https?:\/\//i.test(url) ? 'direct_url' : 'local_file';
                 renderDetection({ isPdf: true, pdfUrl: url, pageUrl: url, source });
+                return;
+            }
+            if (EXTENSIONLESS_PDF_PATH_RE.test(url)) {
+                renderDetection({ isPdf: true, pdfUrl: url, pageUrl: url, source: 'direct_url' });
+                return;
+            }
+            // ACM DL article landing page -> its PDF URL
+            const acmMatch = url.match(
+                /^(https?:\/\/dl\.acm\.org)\/doi\/(?:abs\/|full\/)?(10\.\d{4,}\/[^?#]+)/i);
+            if (acmMatch) {
+                renderDetection({
+                    isPdf: true,
+                    pdfUrl: `${acmMatch[1]}/doi/pdf/${acmMatch[2]}`,
+                    pageUrl: url,
+                    source: 'acm_landing',
+                });
                 return;
             }
             const arxivAbsMatch = url.match(/^https?:\/\/arxiv\.org\/abs\/([\d.]+)(v\d+)?/);
@@ -434,9 +459,31 @@ async function detectAndRender() {
         }
     } catch (_) { /* ignore */ }
 
+    // Ask the tab what it is actually rendering. Current Chrome shows full-page
+    // PDFs with an empty DOM and no <embed>, so `document.contentType` is the
+    // only dependable signal for a PDF whose URL gives nothing away.
+    try {
+        if (activeTab?.id && /^https?:\/\//i.test(activeTab.url || '')) {
+            const probe = await chrome.scripting.executeScript({
+                target: { tabId: activeTab.id },
+                func: () => ({ contentType: document.contentType, url: location.href }),
+            });
+            const result = probe?.[0]?.result;
+            if (result?.contentType === 'application/pdf') {
+                const url = result.url || activeTab.url;
+                renderDetection({ isPdf: true, pdfUrl: url, pageUrl: url, source: 'embedded_pdf' });
+                return;
+            }
+        }
+    } catch (_) { /* ignore */ }
+
     try {
         const stored = await chrome.storage.local.get('detectedPdf');
-        if (stored.detectedPdf?.isPdf) { renderDetection(stored.detectedPdf); return; }
+        // Only trust a cached detection that belongs to the tab being viewed --
+        // otherwise a PDF opened earlier leaks into an unrelated page.
+        const sameTab = stored.detectedPdf?.pageUrl && activeTab?.url &&
+            stored.detectedPdf.pageUrl.split('#')[0] === activeTab.url.split('#')[0];
+        if (stored.detectedPdf?.isPdf && sameTab) { renderDetection(stored.detectedPdf); return; }
     } catch (_) { /* ignore */ }
 
     try {
@@ -463,6 +510,7 @@ function renderDetection(data) {
         arxiv_abstract: 'arXiv abstract page', arxiv_pdf: 'arXiv PDF',
         arxiv_link: 'arXiv PDF link', page_link: 'PDF link on page',
         direct_url: 'Direct PDF URL', local_file: 'Local file',
+        acm_landing: 'ACM DL article page',
     }[data.source] || data.source;
 
     const isUploadRequired = typeof data.pdfUrl === 'string' && !/^https?:\/\//i.test(data.pdfUrl);

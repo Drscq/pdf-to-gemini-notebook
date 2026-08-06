@@ -132,8 +132,40 @@ function getIngestionLabel(sourceType) {
     return isWebpageSourceType(sourceType) ? 'webpage ingestion' : 'PDF ingestion';
 }
 
+/**
+ * Publisher URLs that serve a PDF without a `.pdf` extension, e.g.
+ * https://dl.acm.org/doi/pdf/10.1145/1374376.1374407 or
+ * https://ieeexplore.ieee.org/stamp/stamp.jsp?arnumber=123456
+ */
+const EXTENSIONLESS_PDF_PATH_RE =
+    /\/(?:doi\/(?:e?pdf|pdfdirect)\/|pdf\/|pdfdirect\/|stamp\/stamp\.jsp|content\/pdf\/|articles?\/pdf\/|download\/pdf)/i;
+
 function isLikelyPdfUrl(url) {
-    return typeof url === 'string' && /\.pdf(\?|#|$)/i.test(url);
+    if (typeof url !== 'string') return false;
+    return /\.pdf(\?|#|$)/i.test(url) || EXTENSIONLESS_PDF_PATH_RE.test(url);
+}
+
+/**
+ * Hosts that sit behind bot protection (Cloudflare and friends) and therefore
+ * always reject NotebookLM's server-side URL fetcher — the URL source is
+ * guaranteed to land in ERROR. For these we skip straight to downloading the
+ * PDF in the browser (which holds the clearance cookie) and uploading it.
+ */
+const SERVER_FETCH_BLOCKED_HOSTS = [
+    'dl.acm.org',
+    'eprint.iacr.org',
+    'ieeexplore.ieee.org',
+    'link.springer.com',
+    'www.sciencedirect.com',
+    'onlinelibrary.wiley.com',
+    'www.tandfonline.com',
+    'www.jstor.org',
+];
+
+function isServerFetchBlockedHost(url) {
+    const host = hostFromUrl(url);
+    if (!host) return false;
+    return SERVER_FETCH_BLOCKED_HOSTS.some(h => host === h || host.endsWith(`.${h}`));
 }
 
 function extractHttpStatusFromMessage(message) {
@@ -283,6 +315,9 @@ function shortSourceTag(pdfUrl) {
     if (m) return `eprint-${m[1]}-${m[2]}`;
     m = pdfUrl.match(/arxiv\.org\/(?:pdf|abs|html)\/([\d.]+(?:v\d+)?)/i);
     if (m) return `arXiv-${m[1]}`;
+    // ACM DL: .../doi/pdf/10.1145/1374376.1374407 -> "ACM-1374376.1374407"
+    m = pdfUrl.match(/dl\.acm\.org\/doi\/(?:e?pdf\/|abs\/)?10\.\d{4,}\/([^/?#]+)/i);
+    if (m) return `ACM-${m[1]}`;
     return null;
 }
 
@@ -302,6 +337,9 @@ function isInformativeTitle(value) {
 
 function sanitizeTitle(rawTitle) {
     let title = String(rawTitle || '')
+        // Publisher tab titles read "Paper title | Venue" (ACM DL, Springer,
+        // Wiley...). Keep only the paper title.
+        .split(/\s+\|\s+/)[0]
         .replace(/\.pdf$/i, '')
         .replace(/[\\/:*?"<>|_]/g, ' ')
         .replace(/\s+/g, ' ')
@@ -466,6 +504,30 @@ function findOpenTabForUrl(tabs, pdfUrl) {
 }
 
 /**
+ * Any open tab on the same origin as the PDF. A fetch from such a tab is
+ * same-origin and carries the site's cookies (including a Cloudflare
+ * `cf_clearance`), so it succeeds where a bare service-worker fetch is
+ * challenged — e.g. importing dl.acm.org's PDF while sitting on the article's
+ * landing page.
+ */
+function findSameOriginTab(tabs, pdfUrl) {
+    let origin;
+    try {
+        origin = new URL(pdfUrl).origin;
+    } catch (_) {
+        return null;
+    }
+    return tabs.find(t => {
+        if (!t.url) return false;
+        try {
+            return new URL(t.url).origin === origin;
+        } catch (_) {
+            return false;
+        }
+    }) || null;
+}
+
+/**
  * Title of an open tab showing the PDF, if any. Chrome's PDF viewer sets the
  * tab title to the PDF's embedded metadata title when it has one.
  */
@@ -479,14 +541,19 @@ async function titleFromOpenTab(pdfUrl) {
 }
 
 /**
- * Read the PDF bytes from an open tab showing the URL, fetching in the PAGE
- * context. Sites with anti-bot protection (e.g. eprint.iacr.org) 403 a bare
- * service-worker fetch but allow the page that already passed their check —
- * and the tab has usually cached the PDF bytes anyway.
+ * Read the PDF bytes by fetching in the PAGE context of an open tab on the
+ * PDF's origin. Sites with anti-bot protection (e.g. dl.acm.org behind
+ * Cloudflare, eprint.iacr.org) 403 a bare service-worker fetch but allow the
+ * page that already passed their check — and the tab has usually cached the
+ * PDF bytes anyway.
  */
 async function downloadPdfViaTab(pdfUrl) {
-    const tab = findOpenTabForUrl(await chrome.tabs.query({}), pdfUrl);
-    if (!tab?.id) throw new Error('no open tab is showing the PDF URL');
+    const tabs = await chrome.tabs.query({});
+    // The tab showing the PDF itself is ideal (its bytes are usually cached),
+    // but any tab on the same origin works just as well for the fetch.
+    const exactTab = findOpenTabForUrl(tabs, pdfUrl);
+    const tab = exactTab || findSameOriginTab(tabs, pdfUrl);
+    if (!tab?.id) throw new Error(`no open tab on ${hostFromUrl(pdfUrl) || 'the source site'} to download through`);
 
     const injected = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
@@ -494,14 +561,22 @@ async function downloadPdfViaTab(pdfUrl) {
             try {
                 const response = await fetch(srcUrl, { credentials: 'include', cache: 'force-cache' });
                 if (!response.ok) return { ok: false, error: `HTTP ${response.status} in page context` };
-                const blob = await response.blob();
-                const bytes = new Uint8Array(await blob.arrayBuffer());
+                const contentType = response.headers.get('content-type') || '';
+                const contentDisposition = response.headers.get('content-disposition') || '';
+                const bytes = new Uint8Array(await response.arrayBuffer());
+                // Bot-protection pages answer 200 with an HTML challenge; only
+                // real PDF bytes are worth uploading.
+                const hasPdfMagic = bytes.length >= 4 &&
+                    bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
+                if (!hasPdfMagic) {
+                    return { ok: false, error: `page-context fetch returned ${contentType || 'unknown content'}, not a PDF` };
+                }
                 let bin = '';
                 const CHUNK = 0x8000;
                 for (let i = 0; i < bytes.length; i += CHUNK) {
                     bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
                 }
-                return { ok: true, dataBase64: btoa(bin), mimeType: blob.type || 'application/pdf' };
+                return { ok: true, dataBase64: btoa(bin), contentDisposition };
             } catch (e) {
                 return { ok: false, error: e?.message || 'page-context fetch failed' };
             }
@@ -512,8 +587,15 @@ async function downloadPdfViaTab(pdfUrl) {
     const result = injected?.[0]?.result;
     if (!result?.ok) throw new Error(result?.error || 'could not read PDF from the open tab');
     const embeddedTitle = extractPdfTitleFromBytes(result.dataBase64);
+    // The PDF's own metadata is best, then the tab's title -- but only when the
+    // tab is the source page, never some unrelated tab on the same origin.
+    const tabTitle = exactTab ? tab.title : null;
     return {
-        filename: buildNiceFilename(embeddedTitle || tab.title, pdfUrl, filenameFromUrl(pdfUrl)),
+        filename: buildNiceFilename(
+            embeddedTitle || tabTitle,
+            pdfUrl,
+            filenameFromContentDisposition(result.contentDisposition) || filenameFromUrl(pdfUrl)
+        ),
         mimeType: 'application/pdf',
         fileData: result.dataBase64,
     };
@@ -524,14 +606,24 @@ async function downloadPdfViaTab(pdfUrl) {
  * back to reading from an open tab showing the PDF.
  */
 async function acquirePdfForUpload(pdfUrl, pageUrl) {
+    // On bot-protected hosts a bare service-worker fetch is challenged, while
+    // the page context already holds the clearance cookie -- so read through
+    // the tab first there and keep the direct download as the backup.
+    if (isServerFetchBlockedHost(pdfUrl)) {
+        try {
+            return await downloadPdfViaTab(pdfUrl);
+        } catch (tabErr) {
+            console.warn('[Pipeline] Tab read failed on a bot-protected host, trying a direct download:', tabErr?.message);
+            try {
+                return await downloadDirectWithNiceName(pdfUrl, pageUrl);
+            } catch (directErr) {
+                throw new Error(`${tabErr?.message || 'tab read failed'}; direct download also failed: ${directErr?.message}`);
+            }
+        }
+    }
+
     try {
-        const file = await downloadRemotePdfForUpload(pdfUrl, pageUrl);
-        // Upgrade the raw filename (e.g. "633.pdf") to a readable one, taking
-        // the title from the PDF's own metadata first, then the open tab.
-        const embeddedTitle = extractPdfTitleFromBytes(file.fileData);
-        const tabTitle = embeddedTitle ? null : await titleFromOpenTab(pdfUrl);
-        file.filename = buildNiceFilename(embeddedTitle || tabTitle, pdfUrl, file.filename);
-        return file;
+        return await downloadDirectWithNiceName(pdfUrl, pageUrl);
     } catch (directErr) {
         console.warn('[Pipeline] Direct PDF download failed, trying open tab:', directErr?.message);
         try {
@@ -541,6 +633,18 @@ async function acquirePdfForUpload(pdfUrl, pageUrl) {
             throw new Error(`${directErr?.message || 'download failed'}; tab read also failed: ${tabErr?.message}`);
         }
     }
+}
+
+/**
+ * Direct service-worker download, with the raw filename (e.g. "633.pdf")
+ * upgraded to a readable one from the PDF's own metadata, then the open tab.
+ */
+async function downloadDirectWithNiceName(pdfUrl, pageUrl) {
+    const file = await downloadRemotePdfForUpload(pdfUrl, pageUrl);
+    const embeddedTitle = extractPdfTitleFromBytes(file.fileData);
+    const tabTitle = embeddedTitle ? null : await titleFromOpenTab(pdfUrl);
+    file.filename = buildNiceFilename(embeddedTitle || tabTitle, pdfUrl, file.filename);
+    return file;
 }
 
 // =========================================================================
@@ -1302,9 +1406,13 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
         let niceSourceTitle = null;
         if (!uploadFile && !isWebpageSourceType(effectiveSourceType) && /^https?:\/\//i.test(pdfUrl || '')) {
             try {
+                // The PDF tab itself has no title on publisher sites that serve
+                // the PDF raw, so also consider the landing page we came from.
                 const tabTitle = await titleFromOpenTab(pdfUrl);
-                if (isInformativeTitle(tabTitle)) {
-                    niceSourceTitle = sanitizeTitle(tabTitle);
+                const pageTitle = isInformativeTitle(tabTitle) ? null : await titleFromOpenTab(pageUrl);
+                const best = isInformativeTitle(tabTitle) ? tabTitle : pageTitle;
+                if (isInformativeTitle(best)) {
+                    niceSourceTitle = sanitizeTitle(best);
                 } else {
                     const fromFilename = sanitizeTitle(filenameFromUrl(pdfUrl) || '');
                     if (isInformativeTitle(fromFilename)) niceSourceTitle = fromFilename;
@@ -1382,32 +1490,71 @@ async function runPipeline(pdfUrl, pageUrl, uploadFile = null, sourceType = 'pdf
             if (typeof pdfUrl === 'string' && pdfUrl.startsWith('file://')) {
                 throw new Error('Local PDF detected. Use local upload mode instead of URL mode.');
             }
-            const canFallbackToPdfUpload = !isWebpageSourceType(effectiveSourceType) && isLikelyPdfUrl(pdfUrl);
-            try {
-                source = await addUrlSource(notebookId, pdfUrl);
-            } catch (urlErr) {
-                if (!canFallbackToPdfUpload) {
-                    throw urlErr;
-                }
-                console.warn('[Pipeline] URL source add failed, trying download+upload fallback:', urlErr?.message || urlErr);
-                await setState({
-                    stepDetail: 'URL source was blocked. Downloading PDF from the current URL and uploading directly...'
-                });
+            // Any PDF URL can fall back to download+upload -- the download
+            // itself validates that the bytes really are a PDF, and this
+            // matches what the ingestion poller already does on ERROR.
+            const canFallbackToPdfUpload = !isWebpageSourceType(effectiveSourceType);
 
+            // On hosts that always reject NotebookLM's fetcher, don't spend a
+            // round trip on a URL source that can only end in ERROR.
+            let skipUrlSourceErr = null;
+            if (canFallbackToPdfUpload && isServerFetchBlockedHost(pdfUrl)) {
+                const host = hostFromUrl(pdfUrl);
+                await setState({
+                    stepDetail: `${host || 'This site'} blocks NotebookLM's fetcher. Downloading the PDF in your browser and uploading it...`,
+                });
                 try {
-                    const fallbackFile = await acquirePdfForUpload(pdfUrl, pageUrl);
+                    const directFile = await acquirePdfForUpload(pdfUrl, pageUrl);
                     source = await addFileSource(
                         notebookId,
-                        fallbackFile.filename,
-                        fallbackFile.fileData,
-                        fallbackFile.mimeType
+                        directFile.filename,
+                        directFile.fileData,
+                        directFile.mimeType
                     );
-                    await setState({ uploadFallbackTried: true });
                     await setState({
-                        stepDetail: `URL blocked. Fallback upload succeeded (${fallbackFile.filename}).`
+                        uploadFallbackTried: true,
+                        stepDetail: `Uploaded ${directFile.filename} directly (bypassed the blocked URL fetch).`,
                     });
-                } catch (fallbackErr) {
-                    throw new Error(buildFallbackUploadErrorMessage(urlErr, fallbackErr, pdfUrl));
+                } catch (downloadErr) {
+                    // Keep the URL source as a last resort in case the host is
+                    // no longer actually blocking.
+                    console.warn('[Pipeline] Browser download failed on a blocked host, trying the URL source anyway:', downloadErr?.message);
+                    skipUrlSourceErr = downloadErr;
+                }
+            }
+
+            // Unless the shortcut above already uploaded it, add it as a URL
+            // source and fall back to download+upload if that is rejected.
+            if (!source) {
+                try {
+                    source = await addUrlSource(notebookId, pdfUrl);
+                } catch (urlErr) {
+                    if (skipUrlSourceErr) {
+                        throw new Error(buildFallbackUploadErrorMessage(urlErr, skipUrlSourceErr, pdfUrl));
+                    }
+                    if (!canFallbackToPdfUpload) {
+                        throw urlErr;
+                    }
+                    console.warn('[Pipeline] URL source add failed, trying download+upload fallback:', urlErr?.message || urlErr);
+                    await setState({
+                        stepDetail: 'URL source was blocked. Downloading PDF from the current URL and uploading directly...'
+                    });
+
+                    try {
+                        const fallbackFile = await acquirePdfForUpload(pdfUrl, pageUrl);
+                        source = await addFileSource(
+                            notebookId,
+                            fallbackFile.filename,
+                            fallbackFile.fileData,
+                            fallbackFile.mimeType
+                        );
+                        await setState({ uploadFallbackTried: true });
+                        await setState({
+                            stepDetail: `URL blocked. Fallback upload succeeded (${fallbackFile.filename}).`
+                        });
+                    } catch (fallbackErr) {
+                        throw new Error(buildFallbackUploadErrorMessage(urlErr, fallbackErr, pdfUrl));
+                    }
                 }
             }
         }

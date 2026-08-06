@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PDF to Gemini Notebook",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Import any PDF Chrome can open into Gemini Notebook (NotebookLM) with one click",
   "permissions": [
     "activeTab",
