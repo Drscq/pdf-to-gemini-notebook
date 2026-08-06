@@ -412,6 +412,27 @@ async function init() {
 const EXTENSIONLESS_PDF_PATH_RE =
     /\/(?:doi\/(?:e?pdf|pdfdirect)\/|pdf\/|pdfdirect\/|stamp\/stamp\.jsp|content\/pdf\/|articles?\/pdf\/|download\/pdf)/i;
 
+/**
+ * The PDF behind a known publisher's article landing page.
+ * Returns { pdfUrl, source } or null. Kept in sync with content.js.
+ */
+function publisherPdfUrlFor(url) {
+    // ACM DL: /doi/10.1145/1374376.1374407 -> /doi/pdf/10.1145/1374376.1374407
+    let m = url.match(/^(https?:\/\/dl\.acm\.org)\/doi\/(?:abs\/|full\/)?(10\.\d{4,}\/[^?#]+)/i);
+    if (m) return { pdfUrl: `${m[1]}/doi/pdf/${m[2]}`, source: 'acm_landing' };
+
+    // Springer: /chapter/10.1007/3-540-46766-1_34
+    //        -> /content/pdf/10.1007/3-540-46766-1_34.pdf
+    m = url.match(
+        /^(https?:\/\/link\.springer\.com)\/(?:chapter|article|referenceworkentry|protocol)\/(10\.\d{4,}\/[^?#]+)/i);
+    if (m) {
+        const doi = m[2].replace(/\.pdf$/i, '');
+        return { pdfUrl: `${m[1]}/content/pdf/${doi}.pdf`, source: 'springer_landing' };
+    }
+
+    return null;
+}
+
 async function detectAndRender() {
     let activeTab = null;
     try {
@@ -428,15 +449,14 @@ async function detectAndRender() {
                 renderDetection({ isPdf: true, pdfUrl: url, pageUrl: url, source: 'direct_url' });
                 return;
             }
-            // ACM DL article landing page -> its PDF URL
-            const acmMatch = url.match(
-                /^(https?:\/\/dl\.acm\.org)\/doi\/(?:abs\/|full\/)?(10\.\d{4,}\/[^?#]+)/i);
-            if (acmMatch) {
+            // A known publisher's article landing page -> its PDF URL
+            const publisher = publisherPdfUrlFor(url);
+            if (publisher) {
                 renderDetection({
                     isPdf: true,
-                    pdfUrl: `${acmMatch[1]}/doi/pdf/${acmMatch[2]}`,
+                    pdfUrl: publisher.pdfUrl,
                     pageUrl: url,
-                    source: 'acm_landing',
+                    source: publisher.source,
                 });
                 return;
             }
@@ -510,7 +530,8 @@ function renderDetection(data) {
         arxiv_abstract: 'arXiv abstract page', arxiv_pdf: 'arXiv PDF',
         arxiv_link: 'arXiv PDF link', page_link: 'PDF link on page',
         direct_url: 'Direct PDF URL', local_file: 'Local file',
-        acm_landing: 'ACM DL article page',
+        acm_landing: 'ACM DL article page', springer_landing: 'Springer chapter page',
+        embedded_frame: 'PDF embedded in page',
     }[data.source] || data.source;
 
     const isUploadRequired = typeof data.pdfUrl === 'string' && !/^https?:\/\//i.test(data.pdfUrl);

@@ -318,6 +318,11 @@ function shortSourceTag(pdfUrl) {
     // ACM DL: .../doi/pdf/10.1145/1374376.1374407 -> "ACM-1374376.1374407"
     m = pdfUrl.match(/dl\.acm\.org\/doi\/(?:e?pdf\/|abs\/)?10\.\d{4,}\/([^/?#]+)/i);
     if (m) return `ACM-${m[1]}`;
+    // Springer: .../content/pdf/10.1007/3-540-46766-1_34.pdf
+    //        -> "Springer-3-540-46766-1_34"
+    m = pdfUrl.match(
+        /link\.springer\.com\/(?:content\/pdf|chapter|article|referenceworkentry|protocol)\/10\.\d{4,}\/([^/?#]+?)(?:\.pdf)?(?:[?#]|$)/i);
+    if (m) return `Springer-${m[1]}`;
     return null;
 }
 
@@ -547,12 +552,14 @@ async function titleFromOpenTab(pdfUrl) {
  * page that already passed their check — and the tab has usually cached the
  * PDF bytes anyway.
  */
-async function downloadPdfViaTab(pdfUrl) {
+async function downloadPdfViaTab(pdfUrl, pageUrl = null) {
     const tabs = await chrome.tabs.query({});
     // The tab showing the PDF itself is ideal (its bytes are usually cached),
-    // but any tab on the same origin works just as well for the fetch.
+    // then the page we found it on (a Springer chapter embeds its PDF, so the
+    // PDF has no tab of its own), then any tab on the same origin.
     const exactTab = findOpenTabForUrl(tabs, pdfUrl);
-    const tab = exactTab || findSameOriginTab(tabs, pdfUrl);
+    const sourceTab = exactTab || (pageUrl ? findOpenTabForUrl(tabs, pageUrl) : null);
+    const tab = sourceTab || findSameOriginTab(tabs, pdfUrl);
     if (!tab?.id) throw new Error(`no open tab on ${hostFromUrl(pdfUrl) || 'the source site'} to download through`);
 
     const injected = await chrome.scripting.executeScript({
@@ -588,8 +595,9 @@ async function downloadPdfViaTab(pdfUrl) {
     if (!result?.ok) throw new Error(result?.error || 'could not read PDF from the open tab');
     const embeddedTitle = extractPdfTitleFromBytes(result.dataBase64);
     // The PDF's own metadata is best, then the tab's title -- but only when the
-    // tab is the source page, never some unrelated tab on the same origin.
-    const tabTitle = exactTab ? tab.title : null;
+    // tab really is this document's page, never some unrelated tab that merely
+    // shares the origin.
+    const tabTitle = sourceTab ? sourceTab.title : null;
     return {
         filename: buildNiceFilename(
             embeddedTitle || tabTitle,
@@ -611,7 +619,7 @@ async function acquirePdfForUpload(pdfUrl, pageUrl) {
     // the tab first there and keep the direct download as the backup.
     if (isServerFetchBlockedHost(pdfUrl)) {
         try {
-            return await downloadPdfViaTab(pdfUrl);
+            return await downloadPdfViaTab(pdfUrl, pageUrl);
         } catch (tabErr) {
             console.warn('[Pipeline] Tab read failed on a bot-protected host, trying a direct download:', tabErr?.message);
             try {
@@ -627,7 +635,7 @@ async function acquirePdfForUpload(pdfUrl, pageUrl) {
     } catch (directErr) {
         console.warn('[Pipeline] Direct PDF download failed, trying open tab:', directErr?.message);
         try {
-            return await downloadPdfViaTab(pdfUrl);
+            return await downloadPdfViaTab(pdfUrl, pageUrl);
         } catch (tabErr) {
             // Surface the direct-download error (usually the more meaningful one)
             throw new Error(`${directErr?.message || 'download failed'}; tab read also failed: ${tabErr?.message}`);

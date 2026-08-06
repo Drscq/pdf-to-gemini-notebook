@@ -29,6 +29,40 @@
     }
 
     /**
+     * The PDF behind a known publisher's article landing page.
+     * Returns { pdfUrl, source } or null.
+     */
+    function publisherPdfUrlFor(url) {
+        // ACM DL: /doi/10.1145/1374376.1374407 -> /doi/pdf/10.1145/1374376.1374407
+        let m = url.match(/^(https?:\/\/dl\.acm\.org)\/doi\/(?:abs\/|full\/)?(10\.\d{4,}\/[^?#]+)/i);
+        if (m) return { pdfUrl: `${m[1]}/doi/pdf/${m[2]}`, source: 'acm_landing' };
+
+        // Springer: /chapter/10.1007/3-540-46766-1_34
+        //        -> /content/pdf/10.1007/3-540-46766-1_34.pdf
+        m = url.match(
+            /^(https?:\/\/link\.springer\.com)\/(?:chapter|article|referenceworkentry|protocol)\/(10\.\d{4,}\/[^?#]+)/i);
+        if (m) {
+            const doi = m[2].replace(/\.pdf$/i, '');
+            return { pdfUrl: `${m[1]}/content/pdf/${doi}.pdf`, source: 'springer_landing' };
+        }
+
+        return null;
+    }
+
+    /**
+     * The identifying tail of the page's own URL (e.g. "3-540-46766-1_34"),
+     * used to tell a chapter's PDF apart from the whole volume's.
+     */
+    function pageIdentifier(url) {
+        try {
+            const parts = new URL(url).pathname.split('/').filter(Boolean);
+            return parts.length ? decodeURIComponent(parts[parts.length - 1]) : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    /**
      * Detect if the current page is a PDF or has PDF links.
      * Returns { isPdf, pdfUrl, pageUrl, source }
      */
@@ -55,18 +89,21 @@
             return { isPdf: true, pdfUrl: embed.src, pageUrl, source: 'embedded_pdf' };
         }
 
-        // Strategy 2b: ACM DL article landing page -> its PDF URL.
-        // https://dl.acm.org/doi/10.1145/1374376.1374407
-        //   -> https://dl.acm.org/doi/pdf/10.1145/1374376.1374407
-        const acmMatch = currentUrl.match(
-            /^(https?:\/\/dl\.acm\.org)\/doi\/(?:abs\/|full\/)?(10\.\d{4,}\/[^?#]+)/i);
-        if (acmMatch) {
-            return {
-                isPdf: true,
-                pdfUrl: `${acmMatch[1]}/doi/pdf/${acmMatch[2]}`,
-                pageUrl,
-                source: 'acm_landing',
-            };
+        // Strategy 2a: a PDF embedded in this HTML page, e.g. Springer's
+        // "Chapter PDF" preview <iframe src="/content/pdf/....pdf">. The frame
+        // the page chose to display is the document the user is looking at --
+        // far more trustworthy than guessing from the page's links.
+        const framed = [...document.querySelectorAll('iframe[src], object[data], embed[src]')]
+            .map(el => el.src || el.data)
+            .find(src => looksLikePdfUrl(src));
+        if (framed) {
+            return { isPdf: true, pdfUrl: framed, pageUrl, source: 'embedded_frame' };
+        }
+
+        // Strategy 2b: a known publisher's landing page -> its PDF URL.
+        const publisher = publisherPdfUrlFor(currentUrl);
+        if (publisher) {
+            return { isPdf: true, pdfUrl: publisher.pdfUrl, pageUrl, source: publisher.source };
         }
 
         // Strategy 3: arXiv abstract page -> construct PDF link
@@ -108,10 +145,15 @@
         }
 
         if (pdfLinks.length > 0) {
-            // Return the first PDF link found
+            // Prefer the link that belongs to THIS page. A Springer chapter
+            // lists the whole volume's PDF (24 MB of proceedings) before the
+            // chapter's own, so taking the first link imports the wrong -- and
+            // vastly larger -- document.
+            const id = pageIdentifier(currentUrl);
+            const own = id ? pdfLinks.find(l => l.url.includes(id)) : null;
             return {
                 isPdf: true,
-                pdfUrl: pdfLinks[0].url,
+                pdfUrl: (own || pdfLinks[0]).url,
                 pageUrl,
                 source: 'page_link',
                 allPdfLinks: pdfLinks,

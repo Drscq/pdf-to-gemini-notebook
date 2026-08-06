@@ -19,6 +19,7 @@ Open a PDF (direct link, arXiv, eprint, ACM DL, or a local file), click the exte
 - **Import to any notebook** — an existing one or a new one, from the dropdown
 - **Real titles** — from PDF metadata, or NotebookLM's own content analysis
 - **Detects PDFs without a `.pdf` URL** — publisher viewers like `dl.acm.org/doi/pdf/…` and IEEE Xplore are recognised from what the tab is actually rendering
+- **Detects PDFs embedded in a page** — a Springer chapter's "Chapter PDF" preview imports that chapter, not the whole proceedings volume
 - **Blocked-site fallback** — sites that reject NotebookLM's fetcher (eprint, ACM DL and other Cloudflare-protected publishers) are downloaded in your browser, using your existing session, and uploaded automatically
 - **Multi-account** — pick which signed-in Google account to use (gear → Google Account)
 - **Fast** — typical imports finish in ~10 seconds
@@ -49,6 +50,7 @@ The extension talks only to Google (your session) and the site hosting the PDF �
 - **导入到任意笔记本** — 下拉框选择已有笔记本或新建
 - **真实标题** — 来自 PDF 元数据或 NotebookLM 自己的内容分析
 - **识别无 `.pdf` 后缀的 PDF** — `dl.acm.org/doi/pdf/…`、IEEE Xplore 等出版社链接按标签页实际渲染的内容判断
+- **识别页面内嵌的 PDF** — Springer 章节页的 "Chapter PDF" 预览会导入该章节本身，而不是整本论文集
 - **拦截站点兜底** — 拒绝 NotebookLM 抓取的网站（eprint、ACM DL 等 Cloudflare 保护的出版社）会自动改为用你已登录的会话在浏览器中下载后上传
 - **多账号** — 可选择使用哪个已登录的 Google 账号（齿轮 → Google Account）
 - **快** — 一般导入约 10 秒完成
